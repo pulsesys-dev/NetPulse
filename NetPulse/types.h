@@ -119,6 +119,16 @@ struct LogHdr {
 static const uint32_t LOG_MAGIC = 0x474C4D49;   // "IMLG"
 static const uint16_t LOG_VER = 3;              // v3: + second target, ISP hop, DNS time
 
+// LittleFS must never fill up: on this ESP32 core a full LittleFS crashes the board
+// (littlefs 2.9 divides by zero while reporting "no more free space"). Every save checks first.
+inline bool fsRoomFor(size_t bytes) {
+  size_t total = LittleFS.totalBytes(), used = LittleFS.usedBytes();
+  if (total > used && total - used >= bytes + 3 * 4096) return true;
+  static uint32_t lastWarn = 0;
+  if (!lastWarn || millis() - lastWarn > 600000UL) { lastWarn = millis(); logMsg("History storage nearly full - save skipped\n"); }
+  return false;
+}
+
 class SlotLog {
 public:
   SlotLog(const char *path, uint32_t slotSec, uint16_t cap, LogRec *buf)
@@ -127,15 +137,27 @@ public:
   uint32_t slotSec() const { return _slotSec; }
   uint16_t count() const { return _count; }
 
+  // Saved as a small header file + one file per CHUNK records ("/h1m.hdr", "/h1m_00.bin" ...),
+  // so saving a minute rewrites ~1 KB instead of the whole history (LittleFS copies on write).
+  enum : uint16_t { CHUNK = 64 };                      // records per file (64 x 20 bytes)
+
   void begin() {
     resetRam();
     if (!fsOK) return;
-    File f = LittleFS.open(_path, "r");
     LogHdr h;
-    bool ok = f && f.read((uint8_t *)&h, sizeof(h)) == sizeof(h) && h.magic == LOG_MAGIC && h.ver == LOG_VER &&
-              h.cap == _cap && h.slotSec == _slotSec && h.head < _cap && h.count <= _cap &&
-              f.read((uint8_t *)_buf, sizeof(LogRec) * _cap) == sizeof(LogRec) * _cap;
-    if (f) f.close();
+    bool ok = false;
+    File f = LittleFS.open(hdrPath().c_str(), "r");
+    if (f) {
+      ok = f.read((uint8_t *)&h, sizeof(h)) == sizeof(h) && h.magic == LOG_MAGIC && h.ver == LOG_VER &&
+           h.cap == _cap && h.slotSec == _slotSec && h.head < _cap && h.count <= _cap;
+      f.close();
+    }
+    for (uint16_t c = 0; ok && c < chunks(); c++) {
+      File cf = LittleFS.open(chunkPath(c).c_str(), "r");
+      size_t len = chunkLen(c) * sizeof(LogRec);
+      ok = cf && cf.read((uint8_t *)&_buf[c * CHUNK], len) == len;
+      if (cf) cf.close();
+    }
     if (ok) { _head = h.head; _count = h.count; _lastSlot = h.lastSlot; }
     else { resetRam(); saveAll(); }
     logMsg("Log %s: %u slots loaded\n", _path, (unsigned)_count);
@@ -238,28 +260,38 @@ private:
     h.lastSlot = _lastSlot; h.head = _head; h.count = _count;
   }
 
-  void saveRec(uint16_t idx, bool withHeader = true) {
-    if (!fsOK) return;
-    File f = LittleFS.open(_path, "r+");
-    if (!f) { saveAll(); return; }
-    f.seek(sizeof(LogHdr) + (uint32_t)idx * sizeof(LogRec));
-    f.write((const uint8_t *)&_buf[idx], sizeof(LogRec));
-    if (withHeader) {
-      LogHdr h; header(h);
-      f.seek(0);
-      f.write((const uint8_t *)&h, sizeof(h));
-    }
+  uint16_t chunks() const { return (_cap + CHUNK - 1) / CHUNK; }
+  uint16_t chunkLen(uint16_t c) const { return min<uint16_t>(CHUNK, _cap - c * CHUNK); }
+  String hdrPath() const { return String(_path) + ".hdr"; }
+  String chunkPath(uint16_t c) const { char b[8]; snprintf(b, sizeof(b), "_%02u.bin", (unsigned)c); return String(_path) + b; }
+
+  void saveHdr() {
+    if (!fsOK || !fsRoomFor(sizeof(LogHdr))) return;
+    LogHdr h; header(h);
+    File f = LittleFS.open(hdrPath().c_str(), "w");
+    if (!f) return;
+    f.write((const uint8_t *)&h, sizeof(h));
     f.close();
+  }
+
+  void saveChunk(uint16_t c) {
+    size_t len = chunkLen(c) * sizeof(LogRec);
+    if (!fsOK || !fsRoomFor(len)) return;
+    File f = LittleFS.open(chunkPath(c).c_str(), "w");
+    if (!f) return;
+    f.write((const uint8_t *)&_buf[c * CHUNK], len);
+    f.close();
+  }
+
+  void saveRec(uint16_t idx, bool withHeader = true) {
+    saveChunk(idx / CHUNK);
+    if (withHeader) saveHdr();
   }
 
   void saveAll() {
     if (!fsOK) return;
-    File f = LittleFS.open(_path, "w");
-    if (!f) return;
-    LogHdr h; header(h);
-    f.write((const uint8_t *)&h, sizeof(h));
-    f.write((const uint8_t *)_buf, sizeof(LogRec) * _cap);
-    f.close();
+    for (uint16_t c = 0; c < chunks(); c++) saveChunk(c);
+    saveHdr();
   }
 };
 

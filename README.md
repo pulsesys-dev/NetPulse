@@ -1,4 +1,4 @@
-# NetPulse — network health logger (v2.2)
+# NetPulse — network health logger (v2.3)
 
 Cyberpunk-styled internet quality monitor and logger by Pulse Systems, built on Francesco Landi's
 Internet Connection Monitor 24H (v1.0). Made to collect evidence for your ISP. Runs on:
@@ -94,9 +94,9 @@ then once a day. If there's a newer release it shows **UPDATE AVAILABLE** with t
   **Hold anywhere** to bring the prompt back.
 - The Events page logs every firmware change (`FIRMWARE v2.0.0 > v2.1.0`).
 
-**One-time step:** updates need two firmware slots, so v2.1 uses a different flash layout. Flash v2.1
-**once over USB** with the web flasher (this clears the on-board history once; the microSD files are
-untouched). Every update after that can come over Wi-Fi.
+**One-time step:** v2.3 uses its own flash layout (two firmware slots for Wi-Fi updates + 640 KB for
+history). Flash v2.3 **once over USB** with the web flasher (this clears the on-board history once; the
+microSD files are untouched). Every update after that can come over Wi-Fi.
 
 ### Publishing a release
 1. Set `FW_VERSION` in `NetPulse/NetPulse.ino`, e.g. `"v2.2.0"` (`"b2.2.0"` for a beta), commit and push.
@@ -137,8 +137,8 @@ Wi-Fi is normally set from the flasher. If you build manually you can still put 
 
 **Arduino IDE:** open `NetPulse/NetPulse.ino`, uncomment your board at the top of `config.h`,
 and install the library **GFX Library for Arduino** (Moon On Our Nation).
-- CYD: board *ESP32 Dev Module*, Partition Scheme *Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS)*
-- Guition: board *ESP32S3 Dev Module*, Flash Size *4MB*, PSRAM *OPI PSRAM*, Partition Scheme *Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS)*,
+- CYD: board *ESP32 Dev Module*, Partition Scheme *Custom* (it uses `partitions.csv` in the sketch folder)
+- Guition: board *ESP32S3 Dev Module*, Flash Size *4MB*, PSRAM *OPI PSRAM*, Partition Scheme *Custom* (it uses `partitions.csv` in the sketch folder),
   **USB CDC On Boot: Enabled** (its USB-C is the S3's built-in USB; the build stops with a reminder if this is off)
 
 Works on ESP32 Arduino core 2.x and 3.x.

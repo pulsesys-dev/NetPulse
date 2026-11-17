@@ -53,7 +53,7 @@
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
 // Firmware version = the GitHub release tag: "v2.1.0" official, "b2.1.0" beta (pre-release)
-#define FW_VERSION "v2.2.1"
+#define FW_VERSION "v2.3.0"
 
 // =======================================================================================
 // SETTINGS (stored in flash, written by the web flasher over USB serial)
@@ -264,8 +264,8 @@ uint32_t sdRows = 0;
 // =======================================================================================
 static LogRec buf1m[1440];
 static LogRec buf15m[1344];
-SlotLog log1m("/log_1m.bin", 60, 1440, buf1m);
-SlotLog log15m("/log_15m.bin", 900, 1344, buf15m);
+SlotLog log1m("/h1m", 60, 1440, buf1m);
+SlotLog log15m("/h15m", 900, 1344, buf15m);
 bool dirty1m = false, dirty15m = false;
 
 bool timeValid() { return time(nullptr) > 1700000000; }
@@ -658,6 +658,8 @@ void setup() {
   fsOK = LittleFS.begin(true);       // formats the data partition on first boot
   if (!fsOK) logMsg("LittleFS failed - history kept in RAM only\n");
   bootProgress(45);
+  // history files from before v2.3 (one big file each) - no longer used
+  if (fsOK) { LittleFS.remove("/log_1m.bin"); LittleFS.remove("/log_15m.bin"); }
   log1m.begin();
   log15m.begin();
   loadEvents();
@@ -2558,7 +2560,7 @@ uint32_t evTime(const Event &e) {
 }
 
 void saveEvents() {
-  if (!fsOK || !evDirty) return;
+  if (!fsOK || !evDirty || !fsRoomFor(sizeof(Event) * EV_MAX + 8)) return;
   File f = LittleFS.open("/events.bin", "w");
   if (!f) return;
   uint32_t magic = 0x45564D49, n = evCount;   // "IMVE"
