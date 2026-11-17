@@ -39,6 +39,9 @@
 #include <SD.h>
 #include "netping.h"
 #include "ota.h"
+#include <WebServer.h>
+#include <ESPmDNS.h>
+#include "webpage.h"
 #if defined(TOUCH_GT911)
   #include <Wire.h>
 #endif
@@ -53,7 +56,7 @@
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
 // Firmware version = the GitHub release tag: "v2.1.0" official, "b2.1.0" beta (pre-release)
-#define FW_VERSION "v2.3.1"
+#define FW_VERSION "v2.4.0"
 
 // =======================================================================================
 // SETTINGS (stored in flash, written by the web flasher over USB serial)
@@ -67,7 +70,7 @@ static const uint8_t NIGHT_PRESET[4][2] = { { 0, 0 }, { 22, 6 }, { 23, 7 }, { 21
 static const char *PING_SET1[3] = { PING_HOST, "8.8.8.8", "9.9.9.9" };
 static const char *PING_SET2[3] = { PING_HOST2, "1.1.1.1", "1.1.1.1" };
 uint8_t setBri = 3, setNight = 1, setPing = 0;
-bool setLed = true, setSdLog = true, setUpdChk = true;
+bool setLed = true, setSdLog = true, setUpdChk = true, setWeb = true;
 const char *pingHost1() { return PING_SET1[setPing % 3]; }
 const char *pingHost2() { return PING_SET2[setPing % 3]; }
 uint8_t dayBrightness() { return BRI_LEVEL[setBri & 3]; }
@@ -102,6 +105,7 @@ void loadSettings() {
   setLed    = prefs.getUChar("led", 1) != 0;
   setSdLog  = prefs.getUChar("sdl", SD_LOG ? 1 : 0) != 0;
   setUpdChk = prefs.getUChar("upd", UPDATE_CHECK ? 1 : 0) != 0;
+  setWeb    = prefs.getUChar("web", WEB_SERVER ? 1 : 0) != 0;
   prefs.end();
   if (cfgSsid.length() == 0 && strcmp(WIFI_SSID, "YOUR WIFI NAME") != 0) {
     cfgSsid = WIFI_SSID;
@@ -237,6 +241,11 @@ uint32_t updCheckedT = 0;
 // counters since boot (DEVICE page)
 uint32_t testsRun = 0, totPingSent = 0, totPingLost = 0;
 bool overlayOpen() { return modalOpen || settingsOpen; }
+// web page (runs in its own task on the other core)
+SemaphoreHandle_t snapLock = nullptr;   // history, events and the status snapshot
+SemaphoreHandle_t sdLock = nullptr;     // the microSD card
+WebSnap snap;
+bool mdnsStarted = false;
 
 // microSD log
 SPIClass sdSPI(SD_SPI_HOST);
@@ -399,6 +408,9 @@ void updateJitter();
 void updateLoss();
 uint16_t lossColor(float pct);
 void startWatchdog();
+void webTask(void *);
+void webRoutes();
+void webSnapshot();
 void drawDevicePage();
 void openSettings();
 void closeSettings();
@@ -640,6 +652,8 @@ void setup() {
   digitalWrite(SD_CS_PIN, HIGH);
 
   loadSettings();
+  snapLock = xSemaphoreCreateRecursiveMutex();
+  sdLock = xSemaphoreCreateRecursiveMutex();
   logMsg("IMON READY board=" BOARD_NAME " ver=" FW_VERSION "\n");
 
   gfx = createDisplay(cfgRot);
@@ -659,7 +673,6 @@ void setup() {
   if (!fsOK) logMsg("LittleFS failed - history kept in RAM only\n");
   bootProgress(45);
   // history files from before v2.3 (one big file each) - no longer used
-  if (fsOK) for (const char *old : { "/log_1m.bin", "/log_15m.bin" }) if (LittleFS.exists(old)) LittleFS.remove(old);
   log1m.begin();
   log15m.begin();
   loadEvents();
@@ -703,6 +716,7 @@ void setup() {
   drawPage();
   lastScreenUpdate = lastInternetTest = lastWifiRetry = millis();
   startWatchdog();
+  xTaskCreatePinnedToCore(webTask, "web", 12288, nullptr, 1, nullptr, 0);
 }
 
 // If the main loop ever stops for WATCHDOG_S seconds, restart the board instead of sitting
@@ -752,6 +766,10 @@ void loop() {
   if (millis() - lastScreenUpdate >= 1000) {
     lastScreenUpdate = millis();
     checkWiFiEvents();
+    if (wifiOK && !mdnsStarted && setWeb) {       // http://netpulse.local
+      mdnsStarted = MDNS.begin(WEB_HOSTNAME);
+      if (mdnsStarted) { MDNS.addService("http", "tcp", 80); logMsg("Web page: http://" WEB_HOSTNAME ".local  (http://%s)\n", ipText.c_str()); }
+    }
     bool wasOK = wifiOK;
     String prevTime = timeText;
     updateWiFiState();
@@ -810,6 +828,7 @@ void logSample() {
   sm.p2 = (int)ping2Ms;
   sm.isp = (int)ispMs;
   sm.dns = (int)dnsMs;
+  Lock l(snapLock);                         // the web page may be reading the history
   if (log1m.add(now, sm)) dirty1m = true;
   if (log15m.add(now, sm)) dirty15m = true;
 }
@@ -1869,7 +1888,7 @@ const char *shortLabel(const char *l) {
   static const char *MAP[][2] = { { "ISP ROUTER", "ISP" }, { "PUBLIC IP", "WAN" }, { "DNS SERVER", "DNS" }, { "ROUTER", "RTR" },
     { "HISTORY", "FLASH" }, { "MICROSD", "SD" }, { "FIRMWARE", "FW" }, { "UPDATES", "UPD" }, { "UPTIME", "UP" },
     { "LAST START", "START" }, { "MEMORY", "RAM" }, { "TESTS RUN", "TESTS" }, { "PINGS LOST", "LOST" },
-    { "EVENTS SAVED", "EVENTS" }, { "CHIP TEMP", "TEMP" }, { "SIGNAL", "RSSI" } };
+    { "EVENTS SAVED", "EVENTS" }, { "CHIP TEMP", "TEMP" }, { "SIGNAL", "RSSI" }, { "WEB PAGE", "WEB" }, { "STACK LEFT", "STACK" } };
   for (auto &m : MAP) if (!strcmp(l, m[0])) return m[1];
   return l;
 }
@@ -1886,6 +1905,7 @@ int buildStats(StatRow *r, int max, bool leftCol, bool both, bool narrow) {
     add("ISP ROUTER", ispIp ? ipStr(ispIp) + (narrow ? String("") : "  HOP " + String(ispTtl)) : String("NOT FOUND YET"), C_ISP, 0);
     add("PUBLIC IP", wanIp.length() ? wanIp : String("--"), C_PINK, 0);
     add("DNS SERVER", wifiOK ? WiFi.dnsIP(0).toString() : String("--"), C_WHITE, 2);
+    add("WEB PAGE", !setWeb ? String("OFF") : (narrow ? String(WEB_HOSTNAME ".local") : String(WEB_HOSTNAME ".local  ") + ipText), C_CYAN, 0);
     add("STORAGE", "", C_PINK, 1);
     String hist = fsOK ? String((unsigned)(LittleFS.usedBytes() / 1024)) + " / " + String((unsigned)(LittleFS.totalBytes() / 1024)) + " KB" : String("NOT AVAILABLE");
     add("HISTORY", hist, fsOK ? C_WHITE : C_RED, 0);
@@ -1898,7 +1918,7 @@ int buildStats(StatRow *r, int max, bool leftCol, bool both, bool narrow) {
     add("FIRMWARE", String(FW_VERSION) + (updAvail ? "  >  " + updInfo.tag : String("")), updAvail ? C_PINK : C_CYAN, 0);
     add("UPDATES", updCheckMsg.length() ? updCheckMsg : String(setUpdChk ? "NOT CHECKED YET" : "AUTO CHECK OFF"), C_WHITE, 0);
     add("UPTIME", fmtDuration(millis() / 1000), C_WHITE, 0);
-    add("LAST START", resetReasonName(), C_WHITE, 0);
+    add("LAST START", resetReasonName(), C_WHITE, 2);
     add("MEMORY", narrow ? String(ESP.getFreeHeap() / 1024) + "K  MIN " + String(ESP.getMinFreeHeap() / 1024) + "K"
                          : String(ESP.getFreeHeap() / 1024) + " KB FREE  (MIN " + String(ESP.getMinFreeHeap() / 1024) + ")", C_WHITE, 0);
 #if CONFIG_IDF_TARGET_ESP32S3
@@ -1907,7 +1927,7 @@ int buildStats(StatRow *r, int max, bool leftCol, bool both, bool narrow) {
     add("STACK LEFT", String((unsigned)uxTaskGetStackHighWaterMark(NULL)) + " BYTES", C_DIM, 2);
     add("BOARD", BOARD_NAME, C_DIM, 2);
     add("TESTS", "", C_PINK, 1);
-    add("TESTS RUN", String((unsigned long)testsRun) + (narrow ? "" : " SINCE START"), C_WHITE, 0);
+    add("TESTS RUN", String((unsigned long)testsRun) + (narrow ? "" : " SINCE START"), C_WHITE, 2);
     float lp = totPingSent ? 100.0f * totPingLost / totPingSent : -1;
     add("PINGS LOST", String((unsigned long)totPingLost) + " / " + String((unsigned long)totPingSent) + "  (" + fmtLoss(lp) + ")", lossColor(lp), 0);
     add("EVENTS SAVED", String(evCount), C_WHITE, 2);
@@ -1993,6 +2013,7 @@ String settingLabel(uint8_t id) {
     case SI_LED:      return "STATUS LED";
     case SI_PING:     return "PING TARGET";
     case SI_SD:       return "MICROSD LOG";
+    case SI_WEB:      return "WEB PAGE";
     case SI_UPDCHK:   return "AUTO UPDATES";
     case SI_CHECKNOW: return "CHECK FOR UPDATE";
     case SI_INSTALL:  return "INSTALL " + updInfo.tag;
@@ -2013,6 +2034,7 @@ String settingValue(uint8_t id) {
     case SI_LED:      return setLed ? "ON" : "OFF";
     case SI_PING:     return pingHost1();
     case SI_SD:       return !setSdLog ? "OFF" : (sdState == SD_OK ? "ON" : (sdState == SD_ERR ? "ON - ERROR" : "ON - NO CARD"));
+    case SI_WEB:      return setWeb ? (wifiOK ? ipText : String("ON")) : String("OFF");
     case SI_UPDCHK:   return setUpdChk ? "DAILY" : "OFF";
     case SI_CHECKNOW: return updCheckMsg;
     case SI_CLEAR:    return (clearArmedMs && millis() - clearArmedMs < 5000UL) ? "HOLD AGAIN" : "";
@@ -2118,8 +2140,9 @@ void settingsActivate() {
       break;
     case SI_SD:
       setSdLog = !setSdLog; saveSetting("sdl", setSdLog);
-      if (!setSdLog) { SD.end(); sdState = SD_NONE; } else sdMount();
+      { Lock l(sdLock); if (!setSdLog) { SD.end(); sdState = SD_NONE; } else sdMount(); }
       break;
+    case SI_WEB:     setWeb = !setWeb; saveSetting("web", setWeb); break;
     case SI_UPDCHK:  setUpdChk = !setUpdChk; saveSetting("upd", setUpdChk); break;
     case SI_CHECKNOW:
       if (!wifiOK || !internetOK) { updCheckMsg = "NO INTERNET"; break; }
@@ -2133,7 +2156,7 @@ void settingsActivate() {
       return;
     case SI_CLEAR:
       if (clearArmedMs && millis() - clearArmedMs < 5000UL) {
-        log1m.clear(); log15m.clear(); trendCount = 0;
+        { Lock l(snapLock); log1m.clear(); log15m.clear(); trendCount = 0; }
         evCount = evHead = 0; evDirty = true; saveEvents();
         clearArmedMs = 0;
         logMsg("History cleared from SETTINGS\n");
@@ -2368,6 +2391,7 @@ void handleCommand(char *line) {
     delay(300);
     ESP.restart();
   } else if (strcmp(argv[1], "CLEARLOG") == 0) {
+    Lock l(snapLock);
     log1m.clear();
     log15m.clear();
     trendCount = 0;
@@ -2404,6 +2428,7 @@ void pollSerial() {
 // NETWORK
 // =======================================================================================
 void startWiFi() {
+  WiFi.setHostname(WEB_HOSTNAME);
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
   WiFi.setAutoReconnect(true);
@@ -2432,6 +2457,7 @@ void updateWiFiState() {
 // MICROSD LOG  -  one CSV per day with every test, for showing your ISP
 // =======================================================================================
 bool sdMount() {
+  Lock l(sdLock);
 #if SD_LOG
   sdLastTry = millis();
   spiBusBegin();
@@ -2486,6 +2512,7 @@ bool sdReady() {
 // One row per test: /NetPulse/tests/2026-11-17.csv
 void sdLogTest() {
 #if SD_LOG
+  Lock l(sdLock);
   if (!sdReady()) return;
   time_t now = time(nullptr);
   struct tm tmv;
@@ -2527,6 +2554,7 @@ void sdLogTest() {
 // Events -> /NetPulse/events.csv, finished outages also -> /NetPulse/outages.csv
 void sdEventRows() {
 #if SD_LOG
+  Lock l(sdLock);
   bool any = false;
   for (int i = 0; i < evCount; i++) { const Event &e = evAt(i); if (!e.saved && evTime(e)) { any = true; break; } }
   if (!any || !sdReady()) return;
@@ -2590,6 +2618,7 @@ void loadEvents() {
 }
 
 void addEvent(EvType type, const char *detail, uint32_t dur, uint32_t whenT, uint32_t whenMs) {
+  Lock l(snapLock);
   Event &e = evRing[evHead];
   e.t = whenT; e.ms = whenMs; e.dur = dur; e.type = type; e.saved = 0;
   strncpy(e.detail, detail ? detail : "", sizeof(e.detail) - 1);
@@ -2673,6 +2702,7 @@ String resetReasonName() {
 
 // once the clock is known: fill in times, save to flash and the card
 void flushEvents() {
+  Lock l(snapLock);
   if (timeValid()) for (int i = 0; i < evCount; i++) { Event &e = evAt(i); if (!e.t) { e.t = evTime(e); evDirty = true; } }
   sdEventRows();
   saveEvents();
@@ -2843,6 +2873,7 @@ void runInternetTest() {
   logSample();
   sdLogTest();
   flushEvents();
+  webSnapshot();
   updateTimeString();
   logMsg("Ping %ld/%ld ms (worst %ld)  Loss %d/%d (%.1f%% recent)  Jitter %ld  Router %ld  ISP %ld  DNS %ld  Web %ld HTTP %d  RSSI %d  %d%%  %s\n",
          latencyMs, ping2Ms, pingMaxMs, pingLost, pingSent, lossPct, jitterMs, gwMs, ispMs, dnsMs, webMs, httpCode, wifiRSSI, health, statusText.c_str());
@@ -2944,5 +2975,242 @@ String wifiStatusName(wl_status_t st) {
     case WL_CONNECTION_LOST: return "LOST";
     case WL_DISCONNECTED:    return "WAITING";
     default:                 return "State " + String((int)st);
+  }
+}
+
+// =======================================================================================
+// WEB PAGE  -  http://netpulse.local : live status + log downloads, while it keeps logging.
+//   Runs in its own task on core 0, so a long download never holds up the tests (core 1).
+//   History / events / the status snapshot are guarded by snapLock, the microSD card by sdLock.
+// =======================================================================================
+void webSnapshot() {
+  Lock l(snapLock);
+  WebSnap &s = snap;
+  strlcpy(s.status, statusText.c_str(), sizeof(s.status));
+  strlcpy(s.ssid, cfgSsid.c_str(), sizeof(s.ssid));
+  strlcpy(s.ip, ipText.c_str(), sizeof(s.ip));
+  strlcpy(s.wan, wanIp.c_str(), sizeof(s.wan));
+  strlcpy(s.ispip, ispIp ? ipStr(ispIp).c_str() : "", sizeof(s.ispip));
+  strlcpy(s.upd, updAvail ? updInfo.tag.c_str() : "", sizeof(s.upd));
+  strlcpy(s.host1, pingHost1(), sizeof(s.host1));
+  strlcpy(s.host2, pingHost2(), sizeof(s.host2));
+  s.level = level; s.health = health;
+  s.ping = latencyMs; s.ping2 = ping2Ms; s.jitter = jitterMs; s.router = gwMs; s.isp = ispMs; s.dns = dnsMs;
+  s.rssi = wifiRSSI; s.wifi = wifiOK; s.loss = lossPct;
+  s.sd = !setSdLog ? 0 : (int)sdState; s.sdrows = sdRows;
+  s.tests = testsRun; s.sent = totPingSent; s.lost = totPingLost;
+  s.stack = uxTaskGetStackHighWaterMark(NULL);
+}
+
+static String jsonEsc(const char *s) {
+  String o;
+  for (; *s; s++) { if (*s == '"' || *s == '\\') o += '\\'; if ((uint8_t)*s >= 0x20) o += *s; }
+  return o;
+}
+
+// "tests/2026-11-17.csv", "events.csv" or "outages.csv" only - nothing else on the card is served
+static bool safeLogName(const String &f) {
+  if (f == "events.csv" || f == "outages.csv") return true;
+  if (f.length() != 20 || !f.startsWith("tests/") || !f.endsWith(".csv")) return false;
+  for (int i = 6; i < 16; i++) { char c = f[i]; if (!((c >= '0' && c <= '9') || ((i == 10 || i == 13) && c == '-'))) return false; }
+  return true;
+}
+
+static bool parseDay(const String &d, struct tm &t) {
+  memset(&t, 0, sizeof(t));
+  if (sscanf(d.c_str(), "%d-%d-%d", &t.tm_year, &t.tm_mon, &t.tm_mday) != 3) return false;
+  t.tm_year -= 1900; t.tm_mon -= 1; t.tm_hour = 12; t.tm_isdst = -1;   // noon: safe across DST changes
+  return t.tm_year > 100 && t.tm_mon >= 0 && t.tm_mon < 12 && t.tm_mday >= 1 && t.tm_mday <= 31;
+}
+
+WebServer webSrv(80);
+static uint8_t webBuf[2048];
+
+void webRoutes() {
+
+  webSrv.on("/", HTTP_GET, [] { webSrv.send_P(200, "text/html", WEB_PAGE); });
+
+  webSrv.on("/api/status", HTTP_GET, [] {
+    WebSnap s;
+    { Lock l(snapLock); s = snap; }
+    char t[24] = "";
+    if (timeValid()) { time_t now = time(nullptr); struct tm tmv; localtime_r(&now, &tmv); strftime(t, sizeof(t), "%Y-%m-%d %H:%M", &tmv); }
+    String j = "{";
+    j += "\"board\":\"" + jsonEsc(BOARD_NAME) + "\",\"fw\":\"" FW_VERSION "\",\"upd\":\"" + jsonEsc(s.upd) + "\",";
+    j += "\"time\":\"" + String(t) + "\",\"uptime\":\"" + fmtDuration(millis() / 1000) + "\",";
+    j += "\"status\":\"" + jsonEsc(s.status) + "\",\"level\":" + String(s.level) + ",\"health\":" + String(s.health) + ",";
+    j += "\"ping\":" + String(s.ping) + ",\"ping2\":" + String(s.ping2) + ",\"loss\":" + String(s.loss, 2) + ",";
+    j += "\"jitter\":" + String(s.jitter) + ",\"router\":" + String(s.router) + ",\"isp\":" + String(s.isp) + ",\"dns\":" + String(s.dns) + ",";
+    j += "\"wifi\":" + String(s.wifi ? "true" : "false") + ",\"rssi\":" + String(s.rssi) + ",";
+    j += "\"ssid\":\"" + jsonEsc(s.ssid) + "\",\"ip\":\"" + jsonEsc(s.ip) + "\",\"wan\":\"" + jsonEsc(s.wan) + "\",\"ispip\":\"" + jsonEsc(s.ispip) + "\",";
+    j += "\"host1\":\"" + jsonEsc(s.host1) + "\",\"host2\":\"" + jsonEsc(s.host2) + "\",";
+    j += "\"sd\":" + String(s.sd) + ",\"sdrows\":" + String((unsigned long)s.sdrows) + ",\"tests\":" + String((unsigned long)s.tests) + ",";
+    j += "\"sent\":" + String((unsigned long)s.sent) + ",\"lost\":" + String((unsigned long)s.lost) + ",";
+    j += "\"heap\":" + String(ESP.getFreeHeap() / 1024) + ",\"stack\":" + String(s.stack) + "}";
+    webSrv.sendHeader("Cache-Control", "no-store");
+    webSrv.send(200, "application/json", j);
+  });
+
+  webSrv.on("/api/files", HTTP_GET, [] {
+    String j = "[";
+    {
+      Lock l(sdLock);
+      if (setSdLog && sdState == SD_OK) {
+        File dir = SD.open("/NetPulse/tests");
+        if (dir && dir.isDirectory()) {
+          bool first = true;
+          for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+            String n = f.name();
+            int sl = n.lastIndexOf('/');
+            if (sl >= 0) n = n.substring(sl + 1);
+            if (!f.isDirectory() && n.endsWith(".csv")) {
+              if (!first) j += ",";
+              first = false;
+              j += "{\"n\":\"" + jsonEsc(n.c_str()) + "\",\"s\":" + String((unsigned long)f.size()) + "}";
+            }
+            f.close();
+          }
+        }
+        if (dir) dir.close();
+      }
+    }
+    j += "]";
+    webSrv.sendHeader("Cache-Control", "no-store");
+    webSrv.send(200, "application/json", j);
+  });
+
+  // one file from the card
+  webSrv.on("/dl", HTTP_GET, [] {
+    String f = webSrv.arg("f");
+    if (!safeLogName(f)) { webSrv.send(400, "text/plain", "Unknown file"); return; }
+    String path = "/NetPulse/" + f;
+    File file;
+    size_t size = 0;
+    {
+      Lock l(sdLock);
+      if (!setSdLog || sdState != SD_OK) { webSrv.send(503, "text/plain", "No microSD card"); return; }
+      file = SD.open(path, FILE_READ);
+      if (file) size = file.size();
+    }
+    if (!file) { webSrv.send(404, "text/plain", "Not on the card (yet)"); return; }
+    String name = f.substring(f.lastIndexOf('/') + 1);
+    webSrv.sendHeader("Content-Disposition", "attachment; filename=\"netpulse-" + name + "\"");
+    webSrv.setContentLength(size);
+    webSrv.send(200, "text/csv", "");
+    WiFiClient c = webSrv.client();
+    while (true) {
+      int n;
+      { Lock l(sdLock); n = file.read(webBuf, sizeof(webBuf)); }
+      if (n <= 0 || c.write(webBuf, n) != (size_t)n) break;
+    }
+    Lock l(sdLock);
+    file.close();
+  });
+
+  // every day in a range as one CSV (one header line)
+  webSrv.on("/export.csv", HTTP_GET, [] {
+    struct tm a, b;
+    if (!parseDay(webSrv.arg("from"), a) || !parseDay(webSrv.arg("to"), b)) { webSrv.send(400, "text/plain", "Use from=YYYY-MM-DD&to=YYYY-MM-DD"); return; }
+    time_t t0 = mktime(&a), t1 = mktime(&b);
+    if (t1 < t0) std::swap(t0, t1);
+    if (t1 - t0 > 400L * 86400L) t0 = t1 - 400L * 86400L;
+    { Lock l(sdLock); if (!setSdLog || sdState != SD_OK) { webSrv.send(503, "text/plain", "No microSD card"); return; } }
+    webSrv.sendHeader("Content-Disposition", "attachment; filename=\"netpulse-" + webSrv.arg("from") + "-to-" + webSrv.arg("to") + ".csv\"");
+    webSrv.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    webSrv.send(200, "text/csv", "");
+    bool header = false;
+    for (time_t t = t0; t <= t1 + 3600; t += 86400) {
+      struct tm d;
+      localtime_r(&t, &d);
+      char path[48];
+      snprintf(path, sizeof(path), "/NetPulse/tests/%04d-%02d-%02d.csv", d.tm_year + 1900, d.tm_mon + 1, d.tm_mday);
+      File file;
+      { Lock l(sdLock); if (sdState == SD_OK && SD.exists(path)) file = SD.open(path, FILE_READ); }
+      if (!file) continue;
+      bool skipLine = header;                          // only the first file's header line is kept
+      while (true) {
+        int n;
+        { Lock l(sdLock); n = file.read(webBuf, sizeof(webBuf)); }
+        if (n <= 0) break;
+        int start = 0;
+        if (skipLine) { while (start < n && webBuf[start] != '\n') start++; if (start < n) { start++; skipLine = false; } else continue; }
+        if (n > start) webSrv.sendContent((const char *)webBuf + start, n - start);
+      }
+      header = true;
+      Lock l(sdLock);
+      file.close();
+    }
+    if (!header) webSrv.sendContent("No test files on the card for these dates\r\n");
+    webSrv.sendContent("");
+  });
+
+  // on-board history (no card needed): 24h = 1-minute slots, 7d / 14d = 15-minute slots
+  webSrv.on("/history.csv", HTTP_GET, [] {
+    String r = webSrv.arg("r");
+    int idx = r == "7d" ? 1 : (r == "14d" ? 2 : 0);
+    if (!timeValid()) { webSrv.send(503, "text/plain", "The board's clock isn't set yet"); return; }
+    const RangeDef &R = RANGES[idx];
+    webSrv.sendHeader("Content-Disposition", String("attachment; filename=\"netpulse-history-") + R.shortTitle + ".csv\"");
+    webSrv.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    webSrv.send(200, "text/csv", "");
+    webSrv.sendContent("time,slot_min,quality_avg,quality_min,web_up_pct,ping_ms,ping_worst_ms,loss_pct,jitter_ms,router_ms,ping2_ms,isp_ms,dns_ms\r\n");
+    uint32_t ss = R.log->slotSec();
+    uint32_t nowSlot = (uint32_t)time(nullptr) / ss;
+    uint32_t first = nowSlot - R.span + 1;
+    auto num = [](String &o, uint16_t v) { o += ','; if (v != 0xFFFF) o += String(v); };
+    for (uint32_t s0 = first; s0 <= nowSlot; s0 += 32) {
+      LogRec recs[32];
+      bool ok[32];
+      uint32_t n = min<uint32_t>(32, nowSlot - s0 + 1);
+      { Lock l(snapLock); for (uint32_t i = 0; i < n; i++) ok[i] = R.log->recAt(s0 + i, recs[i]); }
+      String out;
+      for (uint32_t i = 0; i < n; i++) {
+        if (!ok[i]) continue;
+        const LogRec &x = recs[i];
+        out += fmtLocal((s0 + i) * ss);
+        out += ','; out += String(ss / 60);
+        out += ','; out += String(x.qAvg);
+        out += ','; out += String(x.qMin);
+        out += ','; out += String(x.up);
+        num(out, x.pAvg); num(out, x.pMax);
+        out += ','; if (x.loss != 0xFFFF) out += String(x.loss / 10.0f, 1);
+        num(out, x.jit); num(out, x.gw); num(out, x.p2); num(out, x.isp); num(out, x.dns);
+        out += "\r\n";
+      }
+      if (out.length()) webSrv.sendContent(out);
+    }
+    webSrv.sendContent("");
+  });
+
+  // events kept on the board (last 48)
+  webSrv.on("/events-board.csv", HTTP_GET, [] {
+    static Event ev[EV_MAX];
+    static uint32_t et[EV_MAX];
+    int n;
+    { Lock l(snapLock); n = evCount; for (int i = 0; i < n; i++) { ev[i] = evAt(n - 1 - i); et[i] = evTime(ev[i]); } }   // oldest first
+    String out = "time,event,detail,duration_s\r\n";
+    for (int i = 0; i < n; i++) {
+      out += et[i] ? fmtLocal(et[i]) : String("");
+      out += ','; out += EV_NAME[ev[i].type];
+      out += ",\""; out += ev[i].detail; out += "\",";
+      if (ev[i].dur) out += String(ev[i].dur);
+      out += "\r\n";
+    }
+    webSrv.sendHeader("Content-Disposition", "attachment; filename=\"netpulse-events-board.csv\"");
+    webSrv.send(200, "text/csv", out);
+  });
+
+  webSrv.onNotFound([] { webSrv.send(404, "text/plain", "Not found"); });
+}
+
+void webTask(void *) {
+  webRoutes();
+  bool running = false;
+  for (;;) {
+    bool want = setWeb && WiFi.status() == WL_CONNECTED;
+    if (want && !running) { webSrv.begin(); running = true; }
+    else if (!want && running) { webSrv.stop(); running = false; }
+    if (running) webSrv.handleClient();
+    vTaskDelay(pdMS_TO_TICKS(running ? 2 : 250));
   }
 }

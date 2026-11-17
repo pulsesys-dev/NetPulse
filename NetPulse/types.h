@@ -61,7 +61,23 @@ struct Box { int16_t x, y, w, h; int16_t r() const { return x + w; } int16_t b()
 struct ModalGeo { Box box, b0, b1, bar; };        // update prompt layout
 struct SetGeo { int listY, rowH, rows, first, x, w; };   // SETTINGS menu layout
 struct StatRow { const char *label; String value; uint16_t color; uint8_t kind; };   // DEVICE page: 0 row, 1 header, 2 optional, 3 hidden
-enum SetItem : uint8_t { SI_ORIENT, SI_BRIGHT, SI_NIGHT, SI_LED, SI_PING, SI_SD, SI_UPDCHK, SI_CHECKNOW, SI_INSTALL, SI_CLEAR, SI_RESTART, SI_BACK, SI_COUNT };
+enum SetItem : uint8_t { SI_ORIENT, SI_BRIGHT, SI_NIGHT, SI_LED, SI_PING, SI_SD, SI_WEB, SI_UPDCHK, SI_CHECKNOW, SI_INSTALL, SI_CLEAR, SI_RESTART, SI_BACK, SI_COUNT };
+
+// What the web page shows: copied by the main loop after every test, read by the web task
+struct WebSnap {
+  char status[28], ssid[33], ip[16], wan[16], ispip[16], upd[16], host1[16], host2[16];
+  int level, health, ping, ping2, jitter, router, isp, dns, rssi, sd, stack;
+  float loss;
+  bool wifi;
+  uint32_t sdrows, tests, sent, lost;
+};
+
+// Recursive mutex holder: { Lock l(mutex); ... } (no-op until the mutex exists)
+struct Lock {
+  SemaphoreHandle_t h;
+  explicit Lock(SemaphoreHandle_t x) : h(x) { if (h) xSemaphoreTakeRecursive(h, portMAX_DELAY); }
+  ~Lock() { if (h) xSemaphoreGiveRecursive(h); }
+};
 
 struct Layout {
   int16_t W, H;

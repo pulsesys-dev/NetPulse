@@ -85,6 +85,12 @@
 #define UPDATE_CHECK_MS   (24UL * 3600UL * 1000UL)   // once a day
 #define TOUCH_HOLD_MS     1200                       // how long a "hold" is
 
+// ---- 4d. WEB PAGE -----------------------------------------------------------------------
+// Download the logs from a browser on the same Wi-Fi: http://netpulse.local (or the board's IP,
+// shown on the DEVICE page). Read-only. Can also be switched off in SETTINGS.
+#define WEB_SERVER        1
+#define WEB_HOSTNAME      "netpulse"
+
 // ---- 5. NIGHT DIMMING ---------------------------------------------------------------
 #define NIGHT_START_HOUR  22        // dim from 22:00 ...
 #define NIGHT_END_HOUR    6         // ... until 06:00

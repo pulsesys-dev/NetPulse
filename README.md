@@ -1,4 +1,4 @@
-# NetPulse — network health logger (v2.3)
+# NetPulse — network health logger (v2.4)
 
 Cyberpunk-styled internet quality monitor and logger by Pulse Systems, built on Francesco Landi's
 Internet Connection Monitor 24H (v1.0). Made to collect evidence for your ISP. Runs on:
@@ -64,6 +64,21 @@ Some ISP routers don't answer test pings: then `ISP` shows `--` and everything e
 
 At night (22:00–06:00) the screen dims; the first tap wakes it for 30 s, then the next tap switches
 pages. On the CYD the rear RGB LED shows green / yellow / red. The Guition boards have no LED.
+
+## Web page: download the logs from a browser
+While it runs, the board serves a page on your Wi-Fi: open **http://netpulse.local** (or the IP shown on
+the DEVICE page as `WEB PAGE` / `IP` - use the IP on Android phones, which often can't open `.local` names).
+
+- **Live:** status, ping (both targets), loss, jitter, router / ISP / DNS times, Wi-Fi signal - refreshes every 10 s.
+- **Export tests:** pick a date range (or Today / Last 7 days / Last 30 days / Everything) and get one CSV
+  with every 10-second test in that range, ready for Excel.
+- **outages.csv / events.csv** and each **daily file** from the microSD card.
+- **On-board history** (no card needed): 24 hours of 1-minute averages, 7 / 14 days of 15-minute averages,
+  and the last 48 events.
+
+Downloads don't interrupt the logging: the web page runs on the ESP32's other core and shares the card
+safely with the logger. It's read-only (nothing can be changed or deleted from the page), on your local
+network only. Switch it off in SETTINGS (`WEB PAGE`) or with `WEB_SERVER 0`; change the name with `WEB_HOSTNAME`.
 
 ## microSD log (your evidence)
 Put a FAT32 microSD card in the board's slot. Everything opens straight in Excel:
