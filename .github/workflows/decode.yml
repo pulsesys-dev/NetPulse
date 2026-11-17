@@ -1,0 +1,44 @@
+# Turns a crash backtrace ("Backtrace: 0x4205..:0x3fce.. ...") into file:line.
+# Run from the Actions tab (Decode crash > Run workflow) or the API, with the release tag the
+# board was running, the board, and the backtrace line.
+name: Decode crash
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag or branch the board was running (e.g. v2.1.0)"
+        default: main
+      env:
+        description: "Board: cyd, guition_c or guition_r"
+        default: guition_c
+      backtrace:
+        description: "The Backtrace: line from the serial log"
+        required: true
+
+jobs:
+  decode:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+      - run: pip install platformio
+      - run: pio run -e ${{ inputs.env }}
+      - name: Decode
+        env:
+          BT: ${{ inputs.backtrace }}
+        run: |
+          ELF=.pio/build/${{ inputs.env }}/firmware.elf
+          echo "ELF sha256: $(sha256sum $ELF | cut -c1-16)  (compare with 'ELF file SHA256' in the crash)"
+          A2L=$(ls ~/.platformio/packages/toolchain-xtensa-*/bin/*-addr2line | head -1)
+          ADDRS=$(echo "$BT" | grep -oE '0x4[0-9a-fA-F]{7}' | awk 'NR%1==0')
+          echo "=== backtrace ==="
+          $A2L -pfiaC -e $ELF $ADDRS
