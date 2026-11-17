@@ -47,8 +47,13 @@
   #define ESP_ARDUINO_VERSION_MAJOR 2
 #endif
 
+// The HTTPS update check / download runs in loop(), and TLS needs far more stack than the
+// default 8 KB loop task. Overflowing it silently corrupted nearby memory (the history file
+// system) and crashed the board a few seconds later. 16 KB leaves plenty of room.
+SET_LOOP_TASK_STACK_SIZE(16 * 1024);
+
 // Firmware version = the GitHub release tag: "v2.1.0" official, "b2.1.0" beta (pre-release)
-#define FW_VERSION "v2.2.0"
+#define FW_VERSION "v2.2.1"
 
 // =======================================================================================
 // SETTINGS (stored in flash, written by the web flasher over USB serial)
@@ -1649,6 +1654,7 @@ int runUpdateCheck(bool manual) {
   OtaInfo info;
   int r = otaCheck(UPDATE_REPO, UPDATE_ASSET, FW_VERSION, info, updErr);
   idleWork();
+  logMsg("Update check: %u bytes of stack left\n", (unsigned)uxTaskGetStackHighWaterMark(NULL));
   updCheckedT = timeValid() ? (uint32_t)time(nullptr) : 0;
   if (r < 0) { updCheckMsg = "FAILED: " + updErr; logMsg("Update check: %s\n", updErr.c_str()); return -1; }
   if (r == 0) {
@@ -1896,6 +1902,7 @@ int buildStats(StatRow *r, int max, bool leftCol, bool both, bool narrow) {
 #if CONFIG_IDF_TARGET_ESP32S3
     add("CHIP TEMP", String(temperatureRead(), 0) + " C", C_WHITE, 2);
 #endif
+    add("STACK LEFT", String((unsigned)uxTaskGetStackHighWaterMark(NULL)) + " BYTES", C_DIM, 2);
     add("BOARD", BOARD_NAME, C_DIM, 2);
     add("TESTS", "", C_PINK, 1);
     add("TESTS RUN", String((unsigned long)testsRun) + (narrow ? "" : " SINCE START"), C_WHITE, 0);
