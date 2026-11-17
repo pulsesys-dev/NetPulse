@@ -1,6 +1,9 @@
-# Push a version tag and this builds every board, then publishes a GitHub release the boards
+# Create a version tag and this builds every board, then publishes a GitHub release the boards
 # update themselves from (they check at start-up and once a day).
 #
+# Easiest: github.com > Releases > Draft a new release > choose a tag "v2.2.0" (create on publish),
+#          type the notes (shown on the board), Publish. This workflow then attaches the files.
+# Or with git:
 #   Official: git tag -a v2.2.0 -m "What changed (shown on the board)" && git push origin v2.2.0
 #   Beta:     git tag -a b2.2.0 -m "..." && git push origin b2.2.0     -> pre-release
 #
@@ -31,11 +34,17 @@ jobs:
             echo "::error::Tag ${GITHUB_REF_NAME} doesn't match FW_VERSION \"$v\" in NetPulse/NetPulse.ino"; exit 1
           fi
 
-      - name: Release notes from the tag message
+      - name: Release notes (typed on GitHub, else the tag message)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
-          # annotated tag -> its message; plain tag -> the commit message
-          git tag -l --format='%(contents)' "${GITHUB_REF_NAME}" | sed '/^-----BEGIN PGP/,$d' > notes.md
+          # Release made on github.com (Releases > Draft a new release): use the notes typed there
+          gh release view "${GITHUB_REF_NAME}" --json body -q .body > notes.md 2>/dev/null || true
+          if [ ! -s notes.md ]; then
+            # tag pushed with git: annotated tag -> its message; plain tag -> the commit message
+            git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+            git tag -l --format='%(contents)' "${GITHUB_REF_NAME}" | sed '/^-----BEGIN PGP/,$d' > notes.md
+          fi
           [ -s notes.md ] || echo "NetPulse ${GITHUB_REF_NAME}" > notes.md
           cat notes.md
 

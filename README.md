@@ -78,16 +78,14 @@ then once a day. If there's a newer release it shows **UPDATE AVAILABLE** with t
 untouched). Every update after that can come over Wi-Fi.
 
 ### Publishing a release
-1. Set `FW_VERSION` in `NetPulse/NetPulse.ino`, e.g. `"v2.2.0"` (`"b2.2.0"` for a beta).
-2. Commit and push, then tag it. The tag message becomes the notes shown on the board:
-   ```
-   git tag -a v2.2.0 -m "- Faster ISP router search
-   - Fixes the SD tag staying red"
-   git push origin v2.2.0
-   ```
-3. GitHub Actions (`.github/workflows/release.yml`) builds all three boards and publishes the release
-   with `NetPulse-cyd-ota.bin`, `-guition_c-ota.bin`, `-guition_r-ota.bin` (Wi-Fi updates),
-   `NetPulse-Flasher.html` (USB installs) and the source zip.
+1. Set `FW_VERSION` in `NetPulse/NetPulse.ino`, e.g. `"v2.2.0"` (`"b2.2.0"` for a beta), commit and push.
+2. On github.com: **Releases > Draft a new release**, type the tag (`v2.2.0`) and pick *Create new tag on
+   publish*, write the notes (these show on the board's update prompt), tick *Set as a pre-release* for a
+   beta, then **Publish**. (Or with git: `git tag -a v2.2.0 -m "notes"` and `git push origin v2.2.0`.)
+3. GitHub Actions (`.github/workflows/release.yml`) builds all three boards and attaches
+   `NetPulse-cyd-ota.bin`, `-guition_c-ota.bin`, `-guition_r-ota.bin` (Wi-Fi updates),
+   `NetPulse-Flasher.html` (USB installs) and the source zip. Takes about 5 minutes; boards
+   see it at their next daily check or restart.
 
 Beta tags (`b...`) are published as pre-releases: only boards running beta firmware take them.
 Turn checking off with `UPDATE_CHECK 0`.
