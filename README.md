@@ -1,4 +1,4 @@
-# NetPulse — network health logger (v2.1)
+# NetPulse — network health logger (v2.2)
 
 Cyberpunk-styled internet quality monitor and logger by Pulse Systems, built on Francesco Landi's
 Internet Connection Monitor 24H (v1.0). Made to collect evidence for your ISP. Runs on:
@@ -19,6 +19,27 @@ portrait and landscape: flasher > **Connect** > **Settings** > Orientation > **S
 | **7 DAYS** | 15-minute history with weekday labels |
 | **14 DAYS** | 15-minute history with date labels |
 | **EVENTS** | Outages in the last 24 h, downtime, your public IP, and a list of outages, IP changes, Wi-Fi drops, access-point changes and restarts |
+| **DEVICE** | Stats: Wi-Fi, signal, IPs, your router, the ISP's router, public IP, firmware and update status, uptime, why it last restarted, memory, storage, tests and pings since start. **Hold** for SETTINGS |
+
+### Settings (on the board)
+On the DEVICE page, **hold** to open SETTINGS. **Tap** moves to the next item, **hold** changes it (or runs it).
+Everything is saved straight away and survives restarts and updates.
+
+| Setting | Choices |
+|---|---|
+| Orientation | Portrait, landscape, either flipped (turns immediately) |
+| Brightness | 25 / 50 / 75 / 100 % |
+| Night dimming | Off, 22:00-06:00, 23:00-07:00, 21:00-07:00 |
+| Status LED | On / off (CYD only) |
+| Ping target | 1.1.1.1, 8.8.8.8 or 9.9.9.9 (the second target is picked to match) |
+| microSD log | On / off |
+| Auto updates | Daily check / off |
+| Check for update | Asks GitHub now |
+| Install vX | Shown when an update is waiting |
+| Clear history | Hold twice (within 5 s) |
+| Restart / Back | |
+
+The menu closes by itself after a minute without a touch.
 
 History and the last 48 events are saved to the board's flash, so they survive reboots, power cuts
 and firmware updates (unless you tick *Erase everything first* or click *Clear history* in the flasher).

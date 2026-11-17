@@ -43,7 +43,7 @@ extern bool fsOK;     // defined in the sketch: true when the history file syste
 
 enum Level : uint8_t { LV_GOOD = 0, LV_WARN = 1, LV_BAD = 2 };
 
-enum Page : uint8_t { PAGE_HOME, PAGE_24H, PAGE_7D, PAGE_14D, PAGE_EVENTS, PAGE_COUNT };
+enum Page : uint8_t { PAGE_HOME, PAGE_24H, PAGE_7D, PAGE_14D, PAGE_EVENTS, PAGE_DEVICE, PAGE_COUNT };
 
 // ---------------- Event log (outages, IP changes, Wi-Fi drops ...) ----------------
 enum EvType : uint8_t { EV_BOOT, EV_OUTAGE, EV_NET_BACK, EV_WIFI_LOST, EV_IP_CHANGE, EV_AP_CHANGE, EV_ISP_HOP, EV_FIRMWARE, EV_TYPES };
@@ -59,6 +59,9 @@ enum Align : uint8_t { AL_LEFT, AL_CENTER, AL_RIGHT };
 
 struct Box { int16_t x, y, w, h; int16_t r() const { return x + w; } int16_t b() const { return y + h; } };
 struct ModalGeo { Box box, b0, b1, bar; };        // update prompt layout
+struct SetGeo { int listY, rowH, rows, first, x, w; };   // SETTINGS menu layout
+struct StatRow { const char *label; String value; uint16_t color; uint8_t kind; };   // DEVICE page: 0 row, 1 header, 2 optional, 3 hidden
+enum SetItem : uint8_t { SI_ORIENT, SI_BRIGHT, SI_NIGHT, SI_LED, SI_PING, SI_SD, SI_UPDCHK, SI_CHECKNOW, SI_INSTALL, SI_CLEAR, SI_RESTART, SI_BACK, SI_COUNT };
 
 struct Layout {
   int16_t W, H;

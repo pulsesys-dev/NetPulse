@@ -33,13 +33,14 @@
   #define UPDATE_ASSET    "NetPulse-cyd-ota.bin"      // this board's file in GitHub releases
 
   // orient: 0 portrait, 1 landscape, 2 portrait upside-down, 3 landscape upside-down
+inline uint8_t panelRotation(uint8_t orient) { return orient & 3; }       // panel is natively portrait
 inline Arduino_GFX *createDisplay(uint8_t orient) {
     // DC, CS, SCK, MOSI, MISO, SPI host
     Arduino_DataBus *bus = new Arduino_ESP32SPI(2, 15, 14, 13, 12, HSPI);
   #ifdef CYD_USE_ST7789
-    return new Arduino_ST7789(bus, GFX_NOT_DEFINED, orient & 3, true, 240, 320);
+    return new Arduino_ST7789(bus, GFX_NOT_DEFINED, panelRotation(orient), true, 240, 320);
   #else
-    return new Arduino_ILI9341(bus, GFX_NOT_DEFINED, orient & 3, false);   // panel is natively portrait
+    return new Arduino_ILI9341(bus, GFX_NOT_DEFINED, panelRotation(orient), false);
   #endif
   }
 
@@ -84,11 +85,14 @@ inline Arduino_GFX *createDisplay(uint8_t orient) {
   #endif
 
   // orient: 0 portrait, 1 landscape, 2 portrait upside-down, 3 landscape upside-down
+inline uint8_t panelRotation(uint8_t orient) {                            // panel is natively landscape
+    static const uint8_t rot[4] = { 1, 0, 3, 2 };
+    return rot[orient & 3];
+  }
 inline Arduino_GFX *createDisplay(uint8_t orient) {
     // CS, SCK, D0, D1, D2, D3
     Arduino_DataBus *bus = new Arduino_ESP32QSPI(45, 47, 21, 48, 40, 39);
-    static const uint8_t rot[4] = { 1, 0, 3, 2 };                           // panel is natively landscape
-    return new Arduino_NV3041A(bus, GFX_NOT_DEFINED, rot[orient & 3], true);
+    return new Arduino_NV3041A(bus, GFX_NOT_DEFINED, panelRotation(orient), true);
   }
 
 #else

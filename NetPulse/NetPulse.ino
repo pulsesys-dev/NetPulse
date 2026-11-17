@@ -15,6 +15,7 @@
  *              router > ISP > DNS path
  *    24 HOURS  1-minute history       7 DAYS / 14 DAYS  15-minute history
  *    EVENTS    outages, public IP changes, Wi-Fi drops, access point changes, restarts
+ *    DEVICE    network / device / storage / test stats - hold here for SETTINGS
  *  History is saved to flash (LittleFS) and survives reboots and firmware updates.
  *
  *  Settings: config.h     Pins / drivers: board.h     Fonts: fonts.h (Chakra Petch, OFL)
@@ -47,13 +48,41 @@
 #endif
 
 // Firmware version = the GitHub release tag: "v2.1.0" official, "b2.1.0" beta (pre-release)
-#define FW_VERSION "v2.1.0"
+#define FW_VERSION "v2.2.0"
 
 // =======================================================================================
 // SETTINGS (stored in flash, written by the web flasher over USB serial)
 // =======================================================================================
 String cfgSsid, cfgPass, cfgTz;
 uint8_t cfgRot = DEFAULT_ORIENTATION;   // 0 portrait, 1 landscape, 2 portrait flipped, 3 landscape flipped
+
+// Device settings (SETTINGS menu on the DEVICE page; saved in flash). Defaults come from config.h.
+static const uint8_t BRI_LEVEL[4] = { 60, 120, 180, 240 };            // 25 / 50 / 75 / 100 %
+static const uint8_t NIGHT_PRESET[4][2] = { { 0, 0 }, { 22, 6 }, { 23, 7 }, { 21, 7 } };   // [0] = off
+static const char *PING_SET1[3] = { PING_HOST, "8.8.8.8", "9.9.9.9" };
+static const char *PING_SET2[3] = { PING_HOST2, "1.1.1.1", "1.1.1.1" };
+uint8_t setBri = 3, setNight = 1, setPing = 0;
+bool setLed = true, setSdLog = true, setUpdChk = true;
+const char *pingHost1() { return PING_SET1[setPing % 3]; }
+const char *pingHost2() { return PING_SET2[setPing % 3]; }
+uint8_t dayBrightness() { return BRI_LEVEL[setBri & 3]; }
+
+uint8_t defaultBri() {
+  uint8_t best = 3;
+  for (uint8_t i = 0; i < 4; i++) if (abs((int)BRI_LEVEL[i] - BRIGHT_DAY) < abs((int)BRI_LEVEL[best] - BRIGHT_DAY)) best = i;
+  return best;
+}
+uint8_t defaultNight() {
+  for (uint8_t i = 1; i < 4; i++) if (NIGHT_PRESET[i][0] == NIGHT_START_HOUR && NIGHT_PRESET[i][1] == NIGHT_END_HOUR) return i;
+  return 1;
+}
+
+void saveSetting(const char *key, uint8_t v) {
+  Preferences prefs;
+  prefs.begin("imon", false);
+  prefs.putUChar(key, v);
+  prefs.end();
+}
 
 void loadSettings() {
   Preferences prefs;
@@ -62,6 +91,12 @@ void loadSettings() {
   cfgPass = prefs.getString("pass", "").c_str();
   cfgTz   = prefs.getString("tz", MY_TIMEZONE).c_str();
   cfgRot  = prefs.getUChar("rot", DEFAULT_ORIENTATION) & 3;
+  setBri    = prefs.getUChar("bri", defaultBri()) & 3;
+  setNight  = prefs.getUChar("ngt", defaultNight()) & 3;
+  setPing   = prefs.getUChar("png", 0) % 3;
+  setLed    = prefs.getUChar("led", 1) != 0;
+  setSdLog  = prefs.getUChar("sdl", SD_LOG ? 1 : 0) != 0;
+  setUpdChk = prefs.getUChar("upd", UPDATE_CHECK ? 1 : 0) != 0;
   prefs.end();
   if (cfgSsid.length() == 0 && strcmp(WIFI_SSID, "YOUR WIFI NAME") != 0) {
     cfgSsid = WIFI_SSID;
@@ -188,6 +223,15 @@ bool updChecked = false;
 bool modalOpen = false;
 uint8_t modalSel = 0;           // 0 = UPDATE, 1 = IGNORE
 unsigned long modalOpenedMs = 0;
+// SETTINGS menu (tap = next item, hold = change / run it)
+bool settingsOpen = false;
+uint8_t setSel = 0;
+unsigned long settingsTouchedMs = 0, clearArmedMs = 0;
+String updCheckMsg = "";        // result of the last update check, for the menu / DEVICE page
+uint32_t updCheckedT = 0;
+// counters since boot (DEVICE page)
+uint32_t testsRun = 0, totPingSent = 0, totPingLost = 0;
+bool overlayOpen() { return modalOpen || settingsOpen; }
 
 // microSD log
 SPIClass sdSPI(SD_SPI_HOST);
@@ -350,6 +394,15 @@ void updateJitter();
 void updateLoss();
 uint16_t lossColor(float pct);
 void startWatchdog();
+void drawDevicePage();
+void openSettings();
+void closeSettings();
+void settingsNext();
+void settingsActivate();
+void drawSettings();
+void drawSettingsHold(int pct);
+int runUpdateCheck(bool manual);
+bool overlayOpen();
 void updateCheckDue();
 void openModal();
 void closeModal();
@@ -616,7 +669,7 @@ void setup() {
     prefs.end();
   }
   bootProgress(70);
-  sdMount();
+  if (setSdLog) sdMount();
   bootProgress(100);
   delay(500);
 
@@ -682,8 +735,9 @@ void loop() {
     runInternetTest();
     applyStatusLed();
     updateCheckDue();
-    if (modalOpen) {}
+    if (overlayOpen()) {}
     else if (currentPage == PAGE_HOME) drawHomeDynamic();
+    else if (currentPage == PAGE_DEVICE) pageDirty = true;
     else if ((currentPage == PAGE_24H && dirty1m) || ((currentPage == PAGE_7D || currentPage == PAGE_14D) && dirty15m)) pageDirty = true;
   }
 
@@ -697,11 +751,11 @@ void loop() {
     if (wasOK != wifiOK) {
       if (!wifiOK) calculateStatus();
       applyStatusLed();
-      if (currentPage == PAGE_HOME && !modalOpen) drawHomeDynamic();
+      if (currentPage == PAGE_HOME && !overlayOpen()) drawHomeDynamic();
     }
     updateTimeString();
     if (timeText != prevTime) {
-      if (!modalOpen) {
+      if (!overlayOpen()) {
         drawClock();
         if (currentPage == PAGE_HOME) drawFooter();
       }
@@ -709,7 +763,8 @@ void loop() {
   }
 
   if (modalOpen && millis() - modalOpenedMs > 60000UL) closeModal();   // no answer: ask again later
-  if (pageDirty && !modalOpen) drawPage();
+  if (settingsOpen && millis() - settingsTouchedMs > 60000UL) closeSettings();
+  if (pageDirty && !overlayOpen()) drawPage();
   delay(5);
 }
 
@@ -720,6 +775,7 @@ void drawPage() {
   pageShown = true;
   if (currentPage == PAGE_HOME) { drawHomeStatic(); drawHomeDynamic(); }
   else if (currentPage == PAGE_EVENTS) drawEventsPage();
+  else if (currentPage == PAGE_DEVICE) drawDevicePage();
   else {
     drawHistoryPage(RANGES[currentPage - 1]);
     if (currentPage == PAGE_24H) dirty1m = false; else dirty15m = false;
@@ -756,7 +812,7 @@ void logSample() {
 // =======================================================================================
 void initBacklight() {
   pwmInit(TFT_BL, 0);
-  setBacklight(BRIGHT_DAY);
+  setBacklight(dayBrightness());
 }
 
 void setBacklight(uint8_t v) {
@@ -768,15 +824,16 @@ void setBacklight(uint8_t v) {
 bool isNightNow() {
   struct tm ti;
   if (!getLocalTime(&ti, 0)) return false;      // no time yet -> treat as day
-  int h = ti.tm_hour;
-  if (NIGHT_START_HOUR > NIGHT_END_HOUR) return (h >= NIGHT_START_HOUR || h < NIGHT_END_HOUR);
-  return (h >= NIGHT_START_HOUR && h < NIGHT_END_HOUR);
+  if (setNight == 0) return false;                // night dimming off
+  int h = ti.tm_hour, s = NIGHT_PRESET[setNight][0], e = NIGHT_PRESET[setNight][1];
+  if (s > e) return (h >= s || h < e);
+  return (h >= s && h < e);
 }
 
 void updateBacklight() {
   bool awake = (millis() - touchWakeMillis < WAKE_DURATION_MS) && touchWakeMillis != 0;
   bool dim = isNightNow() && !awake;
-  setBacklight(dim ? BRIGHT_NIGHT : BRIGHT_DAY);
+  setBacklight(dim ? BRIGHT_NIGHT : dayBrightness());
   if (dim != nightDimmed) {
     nightDimmed = dim;
     applyStatusLed();
@@ -810,7 +867,7 @@ void initStatusLed() {
 
 void applyStatusLed() {
 #if defined(HAS_RGB_LED)
-  if (NIGHT_LED_OFF && nightDimmed) { ledWrite(0, 0, 0); return; }
+  if (!setLed || (NIGHT_LED_OFF && nightDimmed)) { ledWrite(0, 0, 0); return; }
   switch (level) {
     case LV_GOOD: ledWrite(0, 255, 0); break;                 // green
     case LV_WARN: ledWrite(LED_YELLOW_RED, 255, 0); break;    // yellow
@@ -972,13 +1029,15 @@ void handleTouch() {
     }
     if (wakeOnly || holdFired) return;
     unsigned long held = now - pressStart;
-    if (modalOpen && held > 200) {             // show the hold filling up
+    if (overlayOpen() && held > 200) {         // show the hold filling up
       int pct = (int)min(100UL, (held - 200) * 100 / (TOUCH_HOLD_MS - 200));
-      if (pct != lastHoldPct) { lastHoldPct = pct; drawModalHold(pct); }
+      if (pct != lastHoldPct) { lastHoldPct = pct; if (settingsOpen) drawSettingsHold(pct); else drawModalHold(pct); }
     }
     if (held >= TOUCH_HOLD_MS) {
       holdFired = true;
-      if (modalOpen) modalConfirm();
+      if (settingsOpen) settingsActivate();
+      else if (modalOpen) modalConfirm();
+      else if (currentPage == PAGE_DEVICE) openSettings();
       else if (updAvail) openModal();
     }
     return;
@@ -988,7 +1047,8 @@ void handleTouch() {
     lastTouchMs = now;
     if (wakeOnly || holdFired) return;
     if (lastTouchSeenMs - pressStart >= TOUCH_HOLD_MS) return;
-    if (modalOpen) { modalSel ^= 1; modalOpenedMs = now; drawModal(); }
+    if (settingsOpen) settingsNext();
+    else if (modalOpen) { modalSel ^= 1; modalOpenedMs = now; drawModal(); }
     else switchPage();
   }
 }
@@ -1089,12 +1149,12 @@ int clockLeft() { return L.W - 10 - textW("00:00", L.fM) - (SD_LOG ? sdBadgeW() 
 // small "SD" pill left of the clock: green = logging to the card, red = card stopped working
 void drawSdBadge() {
 #if SD_LOG
-  if (!gfx || !pageShown || modalOpen) return;
+  if (!gfx || !pageShown || overlayOpen()) return;
   drawUpdBadge();
   int w = sdBadgeW(), h = capH(L.fXS) + 8;
   int x = L.W - 10 - textW("00:00", L.fM) - 8 - w, y = (L.hdrH - h) / 2;
   gfx->fillRect(x, y, w, h, C_HEADER);
-  if (sdState == SD_NONE) return;
+  if (sdState == SD_NONE || !setSdLog) return;
   uint16_t c = sdState == SD_OK ? C_GREEN : C_RED;
   uint16_t bg = sdState == SD_OK ? C_GREEN_D : C_RED_D;
   gfx->fillRect(x, y, w, h, bg);
@@ -1582,25 +1642,37 @@ void drawHistoryPage(const RangeDef &R) {
 // =======================================================================================
 // FIRMWARE UPDATES  -  check GitHub at start-up and once a day, prompt, install
 // =======================================================================================
-void updateCheckDue() {
-#if UPDATE_CHECK
-  if (!wifiOK || !internetOK || modalOpen) return;
-  bool due = !updChecked ? millis() > 45000UL : millis() - updLastCheck >= UPDATE_CHECK_MS;
-  if (!due) return;
+// Asks GitHub; returns 1 = update waiting, 0 = none, -1 = error. manual = from the SETTINGS menu.
+int runUpdateCheck(bool manual) {
   updChecked = true;
   updLastCheck = millis();
   OtaInfo info;
   int r = otaCheck(UPDATE_REPO, UPDATE_ASSET, FW_VERSION, info, updErr);
   idleWork();
-  if (r < 0) { logMsg("Update check: %s\n", updErr.c_str()); return; }
-  if (r == 0) { logMsg("Update check: up to date (%s)%s%s\n", FW_VERSION, updErr.length() ? " - " : "", updErr.c_str()); return; }
-  bool ignored = updSkip.length() && otaRank(info.tag.c_str()) <= otaRank(updSkip.c_str());
+  updCheckedT = timeValid() ? (uint32_t)time(nullptr) : 0;
+  if (r < 0) { updCheckMsg = "FAILED: " + updErr; logMsg("Update check: %s\n", updErr.c_str()); return -1; }
+  if (r == 0) {
+    updCheckMsg = updErr.length() ? updErr : String("UP TO DATE");
+    updCheckMsg.toUpperCase();
+    logMsg("Update check: up to date (%s)%s%s\n", FW_VERSION, updErr.length() ? " - " : "", updErr.c_str());
+    return 0;
+  }
+  bool ignored = !manual && updSkip.length() && otaRank(info.tag.c_str()) <= otaRank(updSkip.c_str());
   logMsg("Update check: %s available%s\n", info.tag.c_str(), ignored ? " (ignored)" : "");
-  if (ignored) return;
+  updCheckMsg = info.tag + (ignored ? " IGNORED" : " AVAILABLE");
+  if (ignored) return 0;
   bool fresh = !updAvail || info.tag != updInfo.tag;
   updInfo = info;
   if (!updAvail) { updAvail = true; pageDirty = true; }    // header gets the UPD tag
-  if (fresh) openModal();
+  if (fresh && !manual) openModal();
+  return 1;
+}
+
+void updateCheckDue() {
+#if UPDATE_CHECK
+  if (!setUpdChk || !wifiOK || !internetOK || overlayOpen()) return;
+  bool due = !updChecked ? millis() > 45000UL : millis() - updLastCheck >= UPDATE_CHECK_MS;
+  if (due) runUpdateCheck(false);
 #endif
 }
 
@@ -1778,6 +1850,299 @@ void drawUpdBadge() {
   textBg = C_RED_D;
   drawText(x + w / 2, y + 4, "UPD", L.fXS, C_PINK, AL_CENTER);
   textBg = C_HEADER;
+}
+
+// =======================================================================================
+// DEVICE PAGE  -  network / device / storage / test stats. Hold here for SETTINGS.
+// =======================================================================================
+
+// short labels for narrow columns (CYD landscape)
+const char *shortLabel(const char *l) {
+  static const char *MAP[][2] = { { "ISP ROUTER", "ISP" }, { "PUBLIC IP", "WAN" }, { "DNS SERVER", "DNS" }, { "ROUTER", "RTR" },
+    { "HISTORY", "FLASH" }, { "MICROSD", "SD" }, { "FIRMWARE", "FW" }, { "UPDATES", "UPD" }, { "UPTIME", "UP" },
+    { "LAST START", "START" }, { "MEMORY", "RAM" }, { "TESTS RUN", "TESTS" }, { "PINGS LOST", "LOST" },
+    { "EVENTS SAVED", "EVENTS" }, { "CHIP TEMP", "TEMP" }, { "SIGNAL", "RSSI" } };
+  for (auto &m : MAP) if (!strcmp(l, m[0])) return m[1];
+  return l;
+}
+
+int buildStats(StatRow *r, int max, bool leftCol, bool both, bool narrow) {
+  int n = 0;
+  auto add = [&](const char *l, const String &v, uint16_t c, uint8_t k) { if (n < max) r[n++] = { (narrow && k != 1) ? shortLabel(l) : l, v, c, k }; };
+  if (both || leftCol) {
+    add("NETWORK", "", C_PINK, 1);
+    add("WI-FI", cfgSsid.length() ? cfgSsid : String("--"), C_WHITE, 0);
+    add("SIGNAL", wifiOK ? String(wifiRSSI) + " dBm  CH " + String(WiFi.channel()) : String(narrow ? "OFF" : "DISCONNECTED"), wifiOK ? rssiColor(wifiRSSI) : C_RED, 0);
+    add("IP", ipText, C_WHITE, 0);
+    add("ROUTER", wifiOK ? WiFi.gatewayIP().toString() : String("--"), C_ROUTER, 0);
+    add("ISP ROUTER", ispIp ? ipStr(ispIp) + (narrow ? String("") : "  HOP " + String(ispTtl)) : String("NOT FOUND YET"), C_ISP, 0);
+    add("PUBLIC IP", wanIp.length() ? wanIp : String("--"), C_PINK, 0);
+    add("DNS SERVER", wifiOK ? WiFi.dnsIP(0).toString() : String("--"), C_WHITE, 2);
+    add("STORAGE", "", C_PINK, 1);
+    String hist = fsOK ? String((unsigned)(LittleFS.usedBytes() / 1024)) + " / " + String((unsigned)(LittleFS.totalBytes() / 1024)) + " KB" : String("NOT AVAILABLE");
+    add("HISTORY", hist, fsOK ? C_WHITE : C_RED, 0);
+    String sd = !setSdLog ? String("OFF") : sdState == SD_OK ? String((unsigned)(SD.cardSize() / (1024ULL * 1024ULL * 1024ULL))) + " GB  " + String((unsigned long)sdRows) + " ROWS"
+              : sdState == SD_ERR ? String("CARD ERROR") : String("NO CARD");
+    add("MICROSD", sd, sdState == SD_OK && setSdLog ? C_GREEN : (sdState == SD_ERR ? C_RED : C_DIM), 0);
+  }
+  if (both || !leftCol) {
+    add("DEVICE", "", C_PINK, 1);
+    add("FIRMWARE", String(FW_VERSION) + (updAvail ? "  >  " + updInfo.tag : String("")), updAvail ? C_PINK : C_CYAN, 0);
+    add("UPDATES", updCheckMsg.length() ? updCheckMsg : String(setUpdChk ? "NOT CHECKED YET" : "AUTO CHECK OFF"), C_WHITE, 0);
+    add("UPTIME", fmtDuration(millis() / 1000), C_WHITE, 0);
+    add("LAST START", resetReasonName(), C_WHITE, 0);
+    add("MEMORY", narrow ? String(ESP.getFreeHeap() / 1024) + "K  MIN " + String(ESP.getMinFreeHeap() / 1024) + "K"
+                         : String(ESP.getFreeHeap() / 1024) + " KB FREE  (MIN " + String(ESP.getMinFreeHeap() / 1024) + ")", C_WHITE, 0);
+#if CONFIG_IDF_TARGET_ESP32S3
+    add("CHIP TEMP", String(temperatureRead(), 0) + " C", C_WHITE, 2);
+#endif
+    add("BOARD", BOARD_NAME, C_DIM, 2);
+    add("TESTS", "", C_PINK, 1);
+    add("TESTS RUN", String((unsigned long)testsRun) + (narrow ? "" : " SINCE START"), C_WHITE, 0);
+    float lp = totPingSent ? 100.0f * totPingLost / totPingSent : -1;
+    add("PINGS LOST", String((unsigned long)totPingLost) + " / " + String((unsigned long)totPingSent) + "  (" + fmtLoss(lp) + ")", lossColor(lp), 0);
+    add("EVENTS SAVED", String(evCount), C_WHITE, 2);
+  }
+  return n;
+}
+
+void drawStatColumn(int x, int y, int w, int h, StatRow *r, int n) {
+  const AAFont *f = L.fXS;
+  int rowH = capH(f) + (L.big ? 8 : 5);
+  // drop optional rows (from the end) until it fits
+  int need = n * rowH;
+  for (int i = n - 1; i >= 0 && need > h; i--) if (r[i].kind == 2) { r[i].kind = 3; need -= rowH; }
+  int labW = 0;
+  for (int i = 0; i < n; i++) if (r[i].kind == 0 || r[i].kind == 2) labW = max(labW, textW(r[i].label, f));
+  labW = min(labW + 8, w * 45 / 100);
+  int yy = y;
+  for (int i = 0; i < n; i++) {
+    if (r[i].kind == 3) continue;
+    if (yy + capH(f) > y + h) break;
+    if (r[i].kind == 1) {
+      int tw = drawText(x, yy, "// ", f, C_PINK);
+      tw += drawText(x + tw, yy, r[i].label, f, C_PINK);
+      gfx->drawFastHLine(x + tw + 6, yy + capH(f) / 2, w - tw - 6, C_CARD2);
+    } else {
+      drawText(x, yy, r[i].label, f, C_DIM);
+      drawText(x + labW, yy, fitText(r[i].value, w - labW, f), f, r[i].color);
+    }
+    yy += rowH;
+  }
+}
+
+void drawDevicePage() {
+  gfx->fillScreen(C_BG);
+  drawHeader("DEVICE");
+  const int m = L.m;
+  int hintH = capH(L.fXS) + (L.big ? 12 : 9);
+  Box B = { (int16_t)m, (int16_t)(L.hdrH + m), (int16_t)(L.W - 2 * m), (int16_t)(L.H - L.hdrH - 2 * m - hintH) };
+  int pad = L.big ? 12 : 9;
+  static StatRow rows[32];
+  if (L.land) {                                           // two columns side by side
+    int cw = (B.w - m) / 2;
+    Box a = { B.x, B.y, (int16_t)cw, B.h }, b = { (int16_t)(B.x + cw + m), B.y, (int16_t)(B.w - cw - m), B.h };
+    card(a, C_CARD, C_CYAN);
+    card(b, C_CARD, C_PINK);
+    textBg = C_CARD;
+    bool narrow = cw - 2 * pad < 200;
+    int n = buildStats(rows, 32, true, false, narrow);
+    drawStatColumn(a.x + pad, a.y + pad, a.w - 2 * pad, a.h - 2 * pad, rows, n);
+    n = buildStats(rows, 32, false, false, narrow);
+    drawStatColumn(b.x + pad, b.y + pad, b.w - 2 * pad, b.h - 2 * pad, rows, n);
+  } else {
+    card(B, C_CARD, C_CYAN);
+    textBg = C_CARD;
+    int n = buildStats(rows, 32, true, true, false);
+    drawStatColumn(B.x + pad, B.y + pad, B.w - 2 * pad, B.h - 2 * pad, rows, n);
+  }
+  textBg = C_BG;
+  drawText(L.W / 2, L.H - hintH + (hintH - capH(L.fXS)) / 2 - 1, "HOLD FOR SETTINGS", L.fXS, C_CYAN, AL_CENTER);
+}
+
+// =======================================================================================
+// SETTINGS MENU  -  tap = next item, hold = change it / run it. Saved straight away.
+// =======================================================================================
+
+int settingsItems(uint8_t *ids) {
+  int n = 0;
+  for (uint8_t i = 0; i < SI_COUNT; i++) {
+#if !defined(HAS_RGB_LED)
+    if (i == SI_LED) continue;
+#endif
+    if (i == SI_INSTALL && !updAvail) continue;
+    ids[n++] = i;
+  }
+  return n;
+}
+
+String settingLabel(uint8_t id) {
+  switch (id) {
+    case SI_ORIENT:   return "ORIENTATION";
+    case SI_BRIGHT:   return "BRIGHTNESS";
+    case SI_NIGHT:    return "NIGHT DIMMING";
+    case SI_LED:      return "STATUS LED";
+    case SI_PING:     return "PING TARGET";
+    case SI_SD:       return "MICROSD LOG";
+    case SI_UPDCHK:   return "AUTO UPDATES";
+    case SI_CHECKNOW: return "CHECK FOR UPDATE";
+    case SI_INSTALL:  return "INSTALL " + updInfo.tag;
+    case SI_CLEAR:    return "CLEAR HISTORY";
+    case SI_RESTART:  return "RESTART";
+    default:          return "BACK";
+  }
+}
+
+String settingValue(uint8_t id) {
+  static const char *ORI[4] = { "PORTRAIT", "LANDSCAPE", "PORTRAIT FLIP", "LANDSCAPE FLIP" };
+  static const char *BRI[4] = { "25%", "50%", "75%", "100%" };
+  static const char *NGT[4] = { "OFF", "22:00-06:00", "23:00-07:00", "21:00-07:00" };
+  switch (id) {
+    case SI_ORIENT:   return ORI[cfgRot & 3];
+    case SI_BRIGHT:   return BRI[setBri & 3];
+    case SI_NIGHT:    return NGT[setNight & 3];
+    case SI_LED:      return setLed ? "ON" : "OFF";
+    case SI_PING:     return pingHost1();
+    case SI_SD:       return !setSdLog ? "OFF" : (sdState == SD_OK ? "ON" : (sdState == SD_ERR ? "ON - ERROR" : "ON - NO CARD"));
+    case SI_UPDCHK:   return setUpdChk ? "DAILY" : "OFF";
+    case SI_CHECKNOW: return updCheckMsg;
+    case SI_CLEAR:    return (clearArmedMs && millis() - clearArmedMs < 5000UL) ? "HOLD AGAIN" : "";
+    default:          return "";
+  }
+}
+
+SetGeo settingsGeo(int n) {
+  SetGeo g;
+  int hintH = capH(L.fXS) + (L.big ? 12 : 9);
+  g.listY = L.hdrH + L.m;
+  int listH = L.H - g.listY - L.m - hintH;
+  g.rowH = capH(L.fS) + (L.big ? 18 : 12);
+  g.rows = max(1, listH / g.rowH);
+  g.first = constrain((int)setSel - g.rows / 2, 0, max(0, n - g.rows));
+  g.x = L.m; g.w = L.W - 2 * L.m;
+  return g;
+}
+
+void drawSettings() {
+  uint8_t ids[SI_COUNT];
+  int n = settingsItems(ids);
+  if (setSel >= n) setSel = 0;
+  gfx->fillScreen(C_BG);
+  drawHeader("SETTINGS");
+  SetGeo g = settingsGeo(n);
+  int pad = L.big ? 12 : 9;
+  panel(g.x, g.listY, g.w, g.rows * g.rowH + 4, C_CARD, C_PINK, C_BG);
+  for (int r = 0; r < g.rows && g.first + r < n; r++) {
+    int i = g.first + r;
+    int y = g.listY + 2 + r * g.rowH;
+    bool sel = i == setSel;
+    uint16_t bg = sel ? C_CARD2 : C_CARD;
+    if (sel) {
+      gfx->fillRect(g.x + 2, y, g.w - 4, g.rowH, bg);
+      gfx->fillRect(g.x + 2, y + 3, 3, g.rowH - 6, C_PINK);
+    } else if (r) gfx->drawFastHLine(g.x + pad, y, g.w - 2 * pad, C_CARD2);
+    textBg = bg;
+    int ty = y + (g.rowH - capH(L.fS)) / 2;
+    String lab = settingLabel(ids[i]), val = settingValue(ids[i]);
+    uint16_t lc = ids[i] == SI_INSTALL ? C_PINK : (ids[i] == SI_BACK ? C_CYAN : (sel ? C_WHITE : C_GREY));
+    int lw = drawText(g.x + pad + 4, ty, lab, L.fS, lc);
+    if (val.length()) drawText(g.x + g.w - pad, ty, fitText(val, g.w - 3 * pad - lw - 4, L.fS), L.fS, sel ? C_CYAN : C_DIM, AL_RIGHT);
+  }
+  // scroll marks
+  int cx = g.x + g.w / 2, by = g.listY + g.rows * g.rowH + 4;
+  if (g.first > 0) gfx->fillTriangle(cx - 6, g.listY + 1, cx + 6, g.listY + 1, cx, g.listY - 4, C_PINK);
+  if (g.first + g.rows < n) gfx->fillTriangle(cx - 6, by, cx + 6, by, cx, by + 5, C_PINK);
+  textBg = C_BG;
+  int hintH = capH(L.fXS) + (L.big ? 12 : 9);
+  drawText(L.W / 2, L.H - hintH + (hintH - capH(L.fXS)) / 2 - 1, "TAP = NEXT    HOLD = CHANGE", L.fXS, C_DIM, AL_CENTER);
+}
+
+void drawSettingsHold(int pct) {
+  uint8_t ids[SI_COUNT];
+  int n = settingsItems(ids);
+  SetGeo g = settingsGeo(n);
+  int r = setSel - g.first;
+  int y = g.listY + 2 + (r + 1) * g.rowH - 3;
+  int w = g.w - 8;
+  gfx->fillRect(g.x + 4, y, w * pct / 100, 2, C_PINK);
+}
+
+void openSettings() {
+  settingsOpen = true;
+  setSel = 0;
+  clearArmedMs = 0;
+  settingsTouchedMs = millis();
+  drawSettings();
+}
+
+void closeSettings() {
+  settingsOpen = false;
+  pageDirty = true;
+}
+
+void settingsNext() {
+  uint8_t ids[SI_COUNT];
+  int n = settingsItems(ids);
+  setSel = (setSel + 1) % n;
+  settingsTouchedMs = millis();
+  drawSettings();
+}
+
+void settingsActivate() {
+  uint8_t ids[SI_COUNT];
+  int n = settingsItems(ids);
+  settingsTouchedMs = millis();
+  uint8_t id = ids[setSel % n];
+  switch (id) {
+    case SI_ORIENT:                                   // turn the screen right away
+      cfgRot = (cfgRot + 1) & 3; saveSetting("rot", cfgRot);
+      gfx->setRotation(panelRotation(cfgRot));
+      computeLayout();
+      break;
+    case SI_BRIGHT:  setBri = (setBri + 1) & 3; saveSetting("bri", setBri); touchWakeMillis = millis(); updateBacklight(); break;
+    case SI_NIGHT:   setNight = (setNight + 1) & 3; saveSetting("ngt", setNight); updateBacklight(); break;
+    case SI_LED:     setLed = !setLed; saveSetting("led", setLed); applyStatusLed(); break;
+    case SI_PING:                                     // new target: start the windows fresh
+      setPing = (setPing + 1) % 3; saveSetting("png", setPing);
+      jitCount = jitIndex = 0; jitterMs = -1; lossCount = lossIndex = 0; lossPct = -1;
+      ispIp = 0; ispLastSearch = 0;
+      break;
+    case SI_SD:
+      setSdLog = !setSdLog; saveSetting("sdl", setSdLog);
+      if (!setSdLog) { SD.end(); sdState = SD_NONE; } else sdMount();
+      break;
+    case SI_UPDCHK:  setUpdChk = !setUpdChk; saveSetting("upd", setUpdChk); break;
+    case SI_CHECKNOW:
+      if (!wifiOK || !internetOK) { updCheckMsg = "NO INTERNET"; break; }
+      updCheckMsg = "CHECKING...";
+      drawSettings();
+      runUpdateCheck(true);
+      break;
+    case SI_INSTALL:                                  // the update prompt, UPDATE pre-selected
+      settingsOpen = false;
+      openModal();
+      return;
+    case SI_CLEAR:
+      if (clearArmedMs && millis() - clearArmedMs < 5000UL) {
+        log1m.clear(); log15m.clear(); trendCount = 0;
+        evCount = evHead = 0; evDirty = true; saveEvents();
+        clearArmedMs = 0;
+        logMsg("History cleared from SETTINGS\n");
+      } else clearArmedMs = millis();
+      break;
+    case SI_RESTART:
+      saveEvents();
+      gfx->fillScreen(C_BG);
+      textBg = C_BG;
+      drawText(L.W / 2, L.H / 2 - capH(L.fM) / 2, "RESTARTING...", L.fM, C_CYAN, AL_CENTER);
+      delay(300);
+      ESP.restart();
+      return;
+    default:
+      closeSettings();
+      return;
+  }
+  drawSettings();
 }
 
 // =======================================================================================
@@ -2100,6 +2465,7 @@ String fmtLocal(uint32_t t) {
 
 bool sdReady() {
 #if SD_LOG
+  if (!setSdLog) return false;                                // switched off in SETTINGS
   if (!timeValid()) return false;                             // need the date for names / times
   if (sdState != SD_OK && (millis() - sdLastTry < 30000UL || !sdMount())) { drawSdBadge(); return false; }
   return true;
@@ -2118,9 +2484,10 @@ void sdLogTest() {
   char path[56];
   snprintf(path, sizeof(path), "/NetPulse/tests/%04d-%02d-%02d.csv", tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday);
   SD.mkdir("/NetPulse/tests");
-  const char *hdr = "time,unix,wifi_connected,ping_ms(" PING_HOST "),ping_worst_ms,ping_sent,ping_lost,"
-                    "ping2_ms(" PING_HOST2 "),ping2_sent,ping2_lost,jitter_ms,router_ms,isp_hop_ms,dns_ms,"
-                    "web_ok,http_code,web_ms,wifi_rssi_dbm,health,status\r\n";
+  String hdrS = String("time,unix,wifi_connected,ping_ms(") + pingHost1() + "),ping_worst_ms,ping_sent,ping_lost,"
+                "ping2_ms(" + pingHost2() + "),ping2_sent,ping2_lost,jitter_ms,router_ms,isp_hop_ms,dns_ms,"
+                "web_ok,http_code,web_ms,wifi_rssi_dbm,health,status,ping_host\r\n";
+  const char *hdr = hdrS.c_str();
   String row = fmtLocal((uint32_t)now);
   row += ',';  row += String((unsigned long)now);
   row += ',';  row += wifiOK ? '1' : '0';
@@ -2141,6 +2508,7 @@ void sdLogTest() {
   row += ',';  if (wifiOK) row += String(wifiRSSI);
   row += ',';  row += String(health);
   row += ",\""; row += statusText; row += '"';
+  row += ',';  row += pingHost1();                            // target can be changed in SETTINGS
   row += "\r\n";
   if (sdAppend(path, hdr, row)) { sdState = SD_OK; sdRows++; }
   drawSdBadge();
@@ -2374,7 +2742,7 @@ void runInternetTest() {
 
     // 1. real pings to both internet targets, interleaved
     IPAddress t1, t2;
-    bool ok1 = resolveHost(PING_HOST, t1), ok2 = resolveHost(PING_HOST2, t2);
+    bool ok1 = resolveHost(pingHost1(), t1), ok2 = resolveHost(pingHost2(), t2);
     PingAcc a1, a2;
     for (int i = 0; i < PING_COUNT; i++) {
       if (i) { unsigned long t = millis(); while (millis() - t < PING_GAP_MS) { idleWork(); delay(5); } }
@@ -2445,6 +2813,9 @@ void runInternetTest() {
   } else {
     latencyMs = pingMaxMs = gwMs = webMs = -1;
   }
+  testsRun++;
+  totPingSent += pingSent;
+  totPingLost += pingLost;
   updateJitter();
   updateLoss();
   calculateStatus();
