@@ -53,7 +53,7 @@
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
 // Firmware version = the GitHub release tag: "v2.1.0" official, "b2.1.0" beta (pre-release)
-#define FW_VERSION "v2.3.0"
+#define FW_VERSION "v2.3.1"
 
 // =======================================================================================
 // SETTINGS (stored in flash, written by the web flasher over USB serial)
@@ -659,7 +659,7 @@ void setup() {
   if (!fsOK) logMsg("LittleFS failed - history kept in RAM only\n");
   bootProgress(45);
   // history files from before v2.3 (one big file each) - no longer used
-  if (fsOK) { LittleFS.remove("/log_1m.bin"); LittleFS.remove("/log_15m.bin"); }
+  if (fsOK) for (const char *old : { "/log_1m.bin", "/log_15m.bin" }) if (LittleFS.exists(old)) LittleFS.remove(old);
   log1m.begin();
   log15m.begin();
   loadEvents();
@@ -667,12 +667,12 @@ void setup() {
   {
     Preferences prefs;
     prefs.begin("imon", false);
-    String last = prefs.getString("fwver", "").c_str();
+    String last = prefs.isKey("fwver") ? prefs.getString("fwver", "").c_str() : "";
     if (last != FW_VERSION) {
       if (last.length()) addEvent(EV_FIRMWARE, (last + " > " FW_VERSION).c_str());
       prefs.putString("fwver", FW_VERSION);
     }
-    updSkip = prefs.getString("skipver", "").c_str();
+    updSkip = prefs.isKey("skipver") ? prefs.getString("skipver", "").c_str() : "";
     prefs.end();
   }
   bootProgress(70);
@@ -2712,7 +2712,17 @@ void findIspHop(const IPAddress &target) {
     if (from == (uint32_t)target) break;                    // reached the target itself
     if (!isPrivateIp(from)) {
       ispIp = from; ispTtl = ttl; ispFails = 0;
-      if (ispIp != prev) addEvent(EV_ISP_HOP, ("ISP router " + ipStr(ispIp) + " (hop " + String(ttl) + ")").c_str());
+      if (ispIp != prev) {
+        // remembered across restarts, so only a real change of route is logged
+        Preferences prefs;
+        prefs.begin("imon", false);
+        uint32_t saved = prefs.isKey("isp") ? prefs.getUInt("isp", 0) : 0;
+        if (saved != ispIp) {
+          addEvent(EV_ISP_HOP, ("ISP router " + ipStr(ispIp) + " (hop " + String(ttl) + ")").c_str());
+          prefs.putUInt("isp", ispIp);
+        }
+        prefs.end();
+      }
       return;
     }
   }
@@ -2734,7 +2744,7 @@ void checkPublicIp() {
   if (ip != wanIp) {
     Preferences prefs;
     prefs.begin("imon", false);
-    String saved = prefs.getString("wan", "").c_str();
+    String saved = prefs.isKey("wan") ? prefs.getString("wan", "").c_str() : "";
     if (saved.length() && saved != ip) addEvent(EV_IP_CHANGE, (saved + " > " + ip).c_str());
     if (saved != ip) prefs.putString("wan", ip.c_str());
     prefs.end();
