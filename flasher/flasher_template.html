@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetPulse — Web Flasher</title>
+<style>
+  :root {
+    --bg: #0b0f14; --card: #131a22; --card2: #18212c; --line: #243140;
+    --text: #e6edf3; --muted: #8b9bab; --cyan: #22d3ee; --green: #34d399;
+    --yellow: #facc15; --red: #f87171; --accent: #22d3ee;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 28px 20px 60px; }
+  header { display: flex; align-items: center; gap: 16px; margin-bottom: 26px; }
+  .logo { width: 52px; height: 52px; border-radius: 14px; background: #0d2a3a;
+          display: grid; place-items: center; border: 1px solid var(--line); }
+  h1 { font-size: 22px; margin: 0; letter-spacing: .3px; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .step { background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+          padding: 20px; margin-bottom: 16px; }
+  .step h2 { font-size: 15px; margin: 0 0 14px; display: flex; align-items: center; gap: 10px; }
+  .num { width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: #001018;
+         display: grid; place-items: center; font-size: 13px; font-weight: 700; }
+  .boards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  @media (max-width: 680px) { .boards { grid-template-columns: 1fr; } }
+  .board { background: var(--card2); border: 2px solid var(--line); border-radius: 12px; padding: 14px;
+           cursor: pointer; transition: border-color .15s, transform .15s; position: relative; }
+  .board:hover { transform: translateY(-1px); }
+  .board.sel { border-color: var(--accent); }
+  .board.off { opacity: .45; cursor: not-allowed; }
+  .board .name { font-weight: 650; }
+  .board .spec { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+  .badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 99px; margin-top: 10px;
+           background: #10301f; color: var(--green); }
+  .badge.no { background: #3a1616; color: var(--red); }
+  .screen { width: 34px; height: 52px; border: 2px solid #3b4b5c; border-radius: 5px; float: right;
+            background: linear-gradient(#0a1a3a 0 18%, #000 18%); position: relative; }
+  .screen::after { content: ""; position: absolute; left: 4px; right: 4px; top: 13px; height: 6px;
+                   border-radius: 3px; background: var(--green); }
+  .board.big .screen { width: 34px; height: 60px; }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  button { background: var(--accent); color: #001018; border: 0; border-radius: 10px; padding: 11px 18px;
+           font: inherit; font-weight: 650; cursor: pointer; }
+  button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); font-weight: 500; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  label.chk { display: flex; gap: 8px; align-items: center; color: var(--muted); font-size: 13.5px; cursor: pointer; }
+  select, input[type=text], input[type=password] {
+    background: #0e151c; color: var(--text); border: 1px solid var(--line); border-radius: 9px;
+    padding: 10px 12px; font: inherit; width: 100%; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 680px) { .grid2 { grid-template-columns: 1fr; } }
+  .field label { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 5px; }
+  .pw { position: relative; }
+  .pw button { position: absolute; right: 6px; top: 6px; padding: 5px 10px; font-size: 12px; }
+  .bar { height: 10px; background: #0e151c; border-radius: 99px; overflow: hidden; border: 1px solid var(--line);
+         margin-top: 14px; }
+  .bar > div { height: 100%; width: 0; background: linear-gradient(90deg, var(--cyan), var(--green)); transition: width .2s; }
+  .status { margin-top: 10px; font-size: 14px; min-height: 21px; }
+  .ok { color: var(--green); } .warn { color: var(--yellow); } .err { color: var(--red); }
+  details { margin-top: 12px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  pre { background: #070b0f; border: 1px solid var(--line); border-radius: 9px; padding: 10px; max-height: 220px;
+        overflow: auto; font-size: 12px; color: #9fb3c8; white-space: pre-wrap; margin: 8px 0 0; }
+  .note { color: var(--muted); font-size: 13px; margin-top: 12px; }
+  .banner { background: #3a1616; border: 1px solid #5c2323; color: #fecaca; padding: 12px 14px; border-radius: 10px;
+            margin-bottom: 16px; display: none; }
+  .muted { color: var(--muted); font-size: 13.5px; }
+  .opt { font-weight: 400; font-size: 12.5px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #3b4b5c; flex: none; }
+  .dot.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .dot.busy { background: var(--yellow); }
+  button.small { padding: 6px 12px; font-size: 13px; }
+  #mon { max-height: 260px; }
+  footer { color: var(--muted); font-size: 12px; text-align: center; margin-top: 26px; }
+  kbd { background: #0e151c; border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">
+      <svg width="30" height="30" viewBox="0 0 30 30" fill="none" stroke="#22d3ee" stroke-width="2.2" stroke-linecap="round">
+        <path d="M2 16h6l3-8 5 15 4-11 2 4h6"/>
+      </svg>
+    </div>
+    <div>
+      <h1>NetPulse — Web Flasher</h1>
+      <div class="sub">Live · 24 h · 7 &amp; 14 days · firmware <span id="fwVer">v1.1</span> · <span id="built"></span></div>
+    </div>
+  </header>
+
+  <div class="banner" id="noSerial">
+    This browser can't talk to USB devices. Open this file in <b>Chrome</b> or <b>Edge</b> on a computer
+    (Web Serial isn't available in Safari, Firefox or on phones).
+  </div>
+
+  <section class="step">
+    <h2><span class="num">1</span> Connect</h2>
+    <div class="row">
+      <button id="connBtn">Connect</button>
+      <span class="dot" id="dot"></span>
+      <span id="connInfo" class="muted">Plug the board in with a USB data cable, then click Connect.</span>
+    </div>
+    <details id="monWrap"><summary>Serial monitor</summary>
+      <pre id="mon"></pre>
+      <div class="row" style="margin-top:8px"><button class="ghost small" id="monClear">Clear</button>
+        <button class="ghost small" id="resetBtn" disabled>Restart board</button></div>
+    </details>
+  </section>
+
+  <section class="step">
+    <h2><span class="num">2</span> Flash the firmware <span class="muted opt">(skip if it's already on the board)</span></h2>
+    <div class="boards" id="boards"></div>
+    <div class="row" style="margin-top:14px">
+      <button id="flashBtn" disabled>Flash</button>
+      <label class="chk"><input type="checkbox" id="eraseAll"> Erase everything first (clears Wi-Fi and history)</label>
+      <label class="chk">Speed
+        <select id="baud" style="width:auto;padding:5px 8px">
+          <option value="921600">921600</option>
+          <option value="460800" selected>460800</option>
+          <option value="115200">115200 (slow, safest)</option>
+        </select>
+      </label>
+    </div>
+    <div class="bar"><div id="prog"></div></div>
+    <div class="status" id="flashStatus">Connect first, then pick your board and click Flash.</div>
+    <details><summary>Flash log</summary><pre id="log"></pre></details>
+    <div class="note">Guition boards restart when you connect or save — that's normal for their built-in USB.<br>
+      Won't flash? Hold <kbd>BOOT</kbd>, tap <kbd>RST</kbd>/<kbd>EN</kbd>, let go of <kbd>BOOT</kbd>, then click Flash again.
+      Updating keeps your Wi-Fi and history unless you tick “Erase everything first”.</div>
+  </section>
+
+  <section class="step" id="step3">
+    <h2><span class="num">3</span> Settings</h2>
+    <div class="grid2">
+      <div class="field">
+        <label for="ssid">Wi-Fi name (2.4 GHz)</label>
+        <input type="text" id="ssid" autocomplete="off" spellcheck="false" maxlength="32">
+      </div>
+      <div class="field">
+        <label for="pass">Password</label>
+        <div class="pw">
+          <input type="password" id="pass" autocomplete="off" maxlength="63">
+          <button type="button" class="ghost" id="showPw">Show</button>
+        </div>
+      </div>
+      <div class="field">
+        <label for="tz">Timezone</label>
+        <select id="tz"></select>
+      </div>
+      <div class="field">
+        <label for="orient">Screen orientation</label>
+        <select id="orient">
+          <option value="0">Portrait</option>
+          <option value="1">Landscape</option>
+          <option value="2">Portrait (upside-down)</option>
+          <option value="3">Landscape (upside-down)</option>
+        </select>
+      </div>
+      <div class="field" id="tzCustomWrap" style="display:none">
+        <label for="tzCustom">Custom POSIX timezone</label>
+        <input type="text" id="tzCustom" placeholder="e.g. AEST-10" spellcheck="false">
+      </div>
+    </div>
+    <div class="row" style="margin-top:16px">
+      <button id="sendBtn" disabled>Save to board</button>
+      <button class="ghost" id="readBtn" disabled>Reload from board</button>
+      <button class="ghost" id="wipeBtn" disabled>Forget Wi-Fi</button>
+      <button class="ghost" id="clearLogBtn" disabled>Clear history</button>
+    </div>
+    <div class="status" id="setStatus">Leave Wi-Fi name and password blank to keep the saved Wi-Fi and only change timezone / orientation.</div>
+    <div class="note">Your Wi-Fi details go straight over the USB cable to the board — nothing is sent anywhere else.</div>
+  </section>
+
+  <footer>
+    Original Internet Connection Monitor design © 2026 Francesco Landi — free for personal and educational use.<br>
+    Port for CYD 2.8" and Guition JC4827W543 · flashing by esptool-js
+  </footer>
+</div>
+
+<script type="module">
+// "2.0" -> "v2.0"; "v2.1.0" / "b2.2.0" stay as they are
+function verText(v) { v = String(v || "?"); return /^[a-z]/i.test(v) ? v : "v" + v; }
+
+// ---------------------------------------------------------------------------------------
+// Data filled in by build_flasher.py
+// ---------------------------------------------------------------------------------------
+const FIRMWARE = /*FIRMWARE_JSON*/null;
+const ESPTOOL_SRC = /*ESPTOOL_SRC*/null;
+const ESPTOOL_CDN = "https://unpkg.com/esptool-js@0.4.5/bundle.js";
+
+const BOARDS = [
+  { id: "cyd",       name: "CYD 2.8\"",            spec: "ESP32-2432S028R · 240×320 · resistive", chip: "ESP32",    big: false },
+  { id: "guition_c", name: "Guition 4.3\" C",      spec: "JC4827W543C · 272×480 · capacitive",    chip: "ESP32-S3", big: true },
+  { id: "guition_r", name: "Guition 4.3\" R",      spec: "JC4827W543R · 272×480 · resistive",     chip: "ESP32-S3", big: true },
+];
+
+const TIMEZONES = [
+  ["Brisbane (AEST, no DST)", "AEST-10"],
+  ["Sydney / Melbourne / Canberra / Hobart", "AEST-10AEDT,M10.1.0,M4.1.0/3"],
+  ["Adelaide", "ACST-9:30ACDT,M10.1.0,M4.1.0/3"],
+  ["Darwin", "ACST-9:30"],
+  ["Perth", "AWST-8"],
+  ["New Zealand", "NZST-12NZDT,M9.5.0,M4.1.0/3"],
+  ["UK / Ireland", "GMT0BST,M3.5.0/1,M10.5.0/2"],
+  ["Central Europe (Berlin, Rome, Paris)", "CET-1CEST,M3.5.0,M10.5.0/3"],
+  ["Eastern Europe (Athens, Helsinki)", "EET-2EEST,M3.5.0/3,M10.5.0/4"],
+  ["India", "IST-5:30"],
+  ["China / Singapore / Taiwan", "CST-8"],
+  ["Japan / Korea", "JST-9"],
+  ["US Eastern", "EST5EDT,M3.2.0,M11.1.0"],
+  ["US Central", "CST6CDT,M3.2.0,M11.1.0"],
+  ["US Mountain", "MST7MDT,M3.2.0,M11.1.0"],
+  ["Arizona", "MST7"],
+  ["US Pacific", "PST8PDT,M3.2.0,M11.1.0"],
+  ["UTC", "UTC0"],
+  ["Custom…", "__custom"],
+];
+
+// ---------------------------------------------------------------------------------------
+const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+let selected = null;
+
+function log(msg) { const el = $("log"); el.textContent += msg + "\n"; el.scrollTop = el.scrollHeight; }
+function status(id, msg, cls = "") { const el = $(id); el.className = "status " + cls; el.textContent = msg; }
+function fwFor(id) { return FIRMWARE && FIRMWARE.boards && FIRMWARE.boards[id]; }
+function fmtSize(n) { return (n / 1024 / 1024).toFixed(2) + " MB"; }
+
+// ---- board cards ----
+function renderBoards() {
+  const box = $("boards");
+  box.innerHTML = "";
+  for (const b of BOARDS) {
+    const fw = fwFor(b.id);
+    const el = document.createElement("div");
+    el.className = "board" + (b.big ? " big" : "") + (fw ? "" : " off") + (selected === b.id ? " sel" : "");
+    el.innerHTML = `<div class="screen"></div><div class="name">${b.name}</div><div class="spec">${b.spec}</div>` +
+      (fw ? `<span class="badge">Ready · ${fmtSize(fw.parts.reduce((a, p) => a + p.size, 0))}</span>`
+          : `<span class="badge no">Not built</span>`);
+    if (fw) el.onclick = () => { selected = b.id; localStorage.setItem("imon-board", b.id); renderBoards(); setConnUI(); };
+    box.appendChild(el);
+  }
+}
+
+
+// ---- timezone list ----
+function initTz() {
+  const sel = $("tz");
+  for (const [label, val] of TIMEZONES) {
+    const o = document.createElement("option");
+    o.value = val; o.textContent = label; sel.appendChild(o);
+  }
+  sel.onchange = () => { $("tzCustomWrap").style.display = sel.value === "__custom" ? "" : "none"; };
+}
+function currentTz() {
+  return $("tz").value === "__custom" ? $("tzCustom").value.trim() : $("tz").value;
+}
+function setTz(tz) {
+  const hit = TIMEZONES.find((t) => t[1] === tz);
+  $("tz").value = hit ? tz : "__custom";
+  if (!hit) $("tzCustom").value = tz;
+  $("tz").onchange();
+}
+
+// ---- helpers ----
+function b64ToBinaryString(b64) { return atob(b64); }
+function toHex(str) {
+  if (!str) return "-";
+  return Array.from(new TextEncoder().encode(str)).map((b) => b.toString(16).padStart(2, "0").toUpperCase()).join("");
+}
+function fromHex(hex) {
+  if (!hex || hex === "-") return "";
+  const bytes = new Uint8Array(hex.match(/../g).map((h) => parseInt(h, 16)));
+  return new TextDecoder().decode(bytes);
+}
+function errText(e) {
+  const msg = e && e.message ? e.message : String(e);
+  if (/No port selected/i.test(msg)) return "No port chosen.";
+  if (/dynamically imported module|Failed to fetch/i.test(msg)) return "Couldn't load the flashing tool. Check the internet connection (or rebuild the flasher while online so it's built in).";
+  if (/Failed to open/i.test(msg)) return "The port is in use by another program — close Arduino IDE / PlatformIO serial monitors (or other flasher tabs) and click Connect again.";
+  return msg;
+}
+async function loadEsptool() {
+  if (ESPTOOL_SRC) {
+    const url = URL.createObjectURL(new Blob([ESPTOOL_SRC], { type: "text/javascript" }));
+    return import(url);
+  }
+  return import(ESPTOOL_CDN);
+}
+
+// =======================================================================================
+// ONE SHARED CONNECTION
+//   Connect opens the port once; the serial monitor, settings and flashing all use it.
+//   Flashing borrows the port (closes our reader, hands it to esptool) and gives it back.
+// =======================================================================================
+const conn = { port: null, reader: null, loop: null, listeners: new Set(), busy: false, device: null };
+
+function setConnUI() {
+  const on = !!conn.port;
+  $("connBtn").textContent = on ? "Disconnect" : "Connect";
+  $("connBtn").className = on ? "ghost" : "";
+  $("dot").className = "dot" + (conn.busy ? " busy" : on ? " on" : "");
+  for (const id of ["sendBtn", "readBtn", "wipeBtn", "resetBtn", "clearLogBtn"]) $(id).disabled = !on || conn.busy;
+  $("flashBtn").disabled = !on || conn.busy || !selected;
+  $("connBtn").disabled = conn.busy;
+}
+
+function monitor(line) {
+  const el = $("mon");
+  el.textContent += line + "\n";
+  if (el.textContent.length > 40000) el.textContent = el.textContent.slice(-30000);
+  el.scrollTop = el.scrollHeight;
+}
+
+async function openPort(port) {
+  // the OS can take a moment to release the port after esptool closes it
+  for (let i = 0; ; i++) {
+    try { await port.open({ baudRate: 115200 }); break; }
+    catch (e) {
+      if (/already open/i.test(e.message)) break;
+      if (i >= 8) throw e;
+      await sleep(250);
+    }
+  }
+  try { await port.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch (_) {}
+  startReader(port);
+}
+
+function startReader(port) {
+  const dec = new TextDecoder();
+  let buf = "";
+  const reader = port.readable.getReader();
+  conn.reader = reader;
+  conn.loop = (async () => {
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, i).replace(/\r$/, "");
+          buf = buf.slice(i + 1);
+          monitor(line);
+          for (const fn of conn.listeners) fn(line);
+        }
+      }
+    } catch (_) { /* cancelled or unplugged */ }
+    finally { try { reader.releaseLock(); } catch (_) {} }
+  })();
+}
+
+async function stopReader() {
+  if (!conn.reader) return;
+  try { await conn.reader.cancel(); } catch (_) {}
+  try { await conn.loop; } catch (_) {}
+  conn.reader = null; conn.loop = null;
+}
+
+async function closePort(port) {
+  await stopReader();
+  try { await port.close(); } catch (_) {}
+}
+
+async function writeLine(text) {
+  if (!conn.port || !conn.port.writable) throw new Error("Not connected.");
+  const w = conn.port.writable.getWriter();
+  try { await w.write(new TextEncoder().encode(text)); } finally { w.releaseLock(); }
+}
+
+// send a command (repeating it until the board answers) and wait for a matching line
+async function query(cmd, match, { timeout = 15000, resend = 1500 } = {}) {
+  let result = null;
+  const fn = (l) => { if (!result) { const m = match(l); if (m) result = m; } };
+  conn.listeners.add(fn);
+  try {
+    const t0 = Date.now();
+    while (!result && conn.port && Date.now() - t0 < timeout) {
+      await writeLine("\n" + cmd + "\n");
+      const until = Date.now() + resend;
+      while (!result && conn.port && Date.now() < until) await sleep(50);
+    }
+  } finally { conn.listeners.delete(fn); }
+  return result;
+}
+
+async function hardReset() {
+  // RTS -> EN low (reset) while DTR stays released so GPIO0 isn't pulled into download mode
+  await conn.port.setSignals({ dataTerminalReady: false, requestToSend: true });
+  await sleep(120);
+  await conn.port.setSignals({ dataTerminalReady: false, requestToSend: false });
+}
+
+async function connect() {
+  try {
+    const port = await navigator.serial.requestPort();
+    conn.busy = true; setConnUI();
+    $("connInfo").textContent = "Opening port…";
+    await openPort(port);
+    conn.port = port;
+    conn.busy = false; setConnUI();
+    await identify();
+  } catch (e) {
+    conn.busy = false;
+    $("connInfo").textContent = errText(e);
+    $("connInfo").className = "err";
+    setConnUI();
+  }
+}
+
+async function disconnect() {
+  if (!conn.port) return;
+  const p = conn.port;
+  conn.port = null; conn.device = null;
+  await closePort(p);
+  $("connInfo").className = "muted";
+  $("connInfo").textContent = "Disconnected.";
+  setConnUI();
+}
+
+function histText(min) {
+  if (!min) return "none yet";
+  if (min < 120) return `${min} min`;
+  if (min < 48 * 60) return `${Math.round(min / 60)} h`;
+  return `${(min / 1440).toFixed(1)} days`;
+}
+
+async function clearHistory() {
+  if (!confirm("Delete the 24-hour, 7-day and 14-day history on the board?")) return;
+  conn.busy = true; setConnUI();
+  try {
+    const r = await query("IMON CLEARLOG", (l) => (l.startsWith("IMON OK") ? "ok" : null), { timeout: 10000 });
+    status("setStatus", r ? "History cleared. The board starts logging again from now." : "No answer from the board.", r ? "ok" : "err");
+    if (r) { conn.busy = false; await identify(6000); }
+  } catch (e) {
+    status("setStatus", errText(e), "err");
+  } finally { conn.busy = false; setConnUI(); }
+}
+
+function boardIdFrom(name) {
+  if (/W543C/i.test(name)) return "guition_c";
+  if (/W543R/i.test(name)) return "guition_r";
+  if (/CYD|2432S028/i.test(name)) return "cyd";
+  return null;
+}
+
+async function identify(timeout = 10000) {
+  $("connInfo").className = "muted";
+  $("connInfo").textContent = "Connected · looking for the NetPulse firmware…";
+  let sawBoot = false, sawImon = false;
+  const spy = (l) => { if (/^ESP-ROM|^entry 0x|^rst:0x/.test(l)) sawBoot = true; if (l.startsWith("IMON")) sawImon = true; };
+  conn.listeners.add(spy);
+  let r;
+  try { r = await query("IMON GET", (l) => (l.startsWith("IMON INFO") ? l : null), { timeout, resend: 1200 }); }
+  finally { conn.listeners.delete(spy); }
+  if (!conn.port) return null;
+  if (!r) {
+    conn.device = null;
+    $("connInfo").className = "warn";
+    $("connInfo").textContent = sawBoot && !sawImon
+      ? "Connected · the board boots but its firmware isn't answering over USB (older build). Pick your board and Flash this version."
+      : "Connected · no NetPulse firmware found — pick your board and Flash.";
+    return null;
+  }
+  const get = (k) => { const m = r.match(new RegExp(" " + k + "=(\\S+)")); return m ? m[1] : ""; };
+  const board = (r.match(/board=(.*?) ver=/) || [])[1] || "?";
+  const ssid = fromHex(get("ssid"));
+  conn.device = { board, ver: get("ver"), ssid, tz: fromHex(get("tz")), rot: get("rot"),
+                  log24: parseInt(get("log24") || "0", 10), log14: parseInt(get("log14d") || "0", 10) };
+  const id = boardIdFrom(board);
+  if (id && fwFor(id)) { selected = id; localStorage.setItem("imon-board", id); renderBoards(); }
+  if (conn.device.tz) setTz(conn.device.tz);
+  if (conn.device.rot !== "") $("orient").value = conn.device.rot;
+  $("ssid").placeholder = ssid ? `${ssid} (saved — leave blank to keep)` : "";
+  $("connInfo").className = "ok";
+  const d = conn.device;
+  const hist = get("log24") !== "" ? ` · history: ${histText(d.log14 * 15)}` : "";
+  const sdv = get("sd");
+  const sdTxt = sdv === "" ? "" : (sdv === "1" ? ` · microSD: logging (${get("sdrows")} rows this boot)` : (sdv === "2" ? " · microSD: card error" : " · microSD: no card"));
+  const upd = get("upd");
+  const updTxt = upd && upd !== "-" ? ` · update ${upd} waiting on the board` : "";
+  $("connInfo").textContent = `Connected · ${board} · ${verText(d.ver)} · Wi-Fi: ${ssid || "not set"}${hist}${sdTxt}${updTxt}`;
+  setConnUI();
+  return conn.device;
+}
+
+navigator.serial && navigator.serial.addEventListener("disconnect", (e) => {
+  if (conn.port && e.target === conn.port && !conn.busy) {
+    conn.port = null; conn.reader = null; conn.device = null;
+    $("connInfo").className = "warn";
+    $("connInfo").textContent = "Board unplugged (or it restarted on its own USB). Click Connect again.";
+    setConnUI();
+  }
+});
+
+// =======================================================================================
+// FLASH (borrows the open port)
+// =======================================================================================
+async function flash() {
+  const board = BOARDS.find((b) => b.id === selected);
+  const fw = fwFor(selected);
+  if (!board || !fw || !conn.port) return;
+  if (conn.device && boardIdFrom(conn.device.board) && boardIdFrom(conn.device.board) !== board.id &&
+      !confirm(`The connected board says it's "${conn.device.board}", but you picked ${board.name}. Flash anyway?`)) return;
+
+  const port = conn.port;
+  conn.busy = true; setConnUI();
+  $("prog").style.width = "0%";
+  let transport = null;
+  try {
+    status("flashStatus", "Loading flasher…");
+    const { ESPLoader, Transport } = await loadEsptool();
+    await closePort(port);                       // hand the port to esptool
+
+    transport = new Transport(port, true);
+    const terminal = { clean() {}, writeLine: (d) => log(d), write: (d) => log(d) };
+    const loader = new ESPLoader({ transport, baudrate: parseInt($("baud").value, 10), terminal, romBaudrate: 115200 });
+
+    status("flashStatus", "Putting the chip into flash mode…");
+    const chipDesc = loader.main ? await loader.main() : await loader.main_fn();
+    const chipName = (loader.chip && loader.chip.CHIP_NAME) || String(chipDesc);
+    log("Chip: " + chipDesc);
+    if ((board.chip === "ESP32-S3") !== /S3/i.test(chipName)) {
+      throw new Error(`This board is an ${chipName}, but ${board.name} needs ${board.chip}. Pick the right board.`);
+    }
+
+    const fileArray = fw.parts.map((p) => ({ address: p.addr, data: b64ToBinaryString(p.b64) }));
+    const total = fw.parts.reduce((a, p) => a + p.size, 0);
+    const done = new Array(fileArray.length).fill(0);
+    status("flashStatus", $("eraseAll").checked ? "Erasing flash (about 20 s)…" : "Writing firmware…");
+    await loader.writeFlash({
+      fileArray, flashSize: "keep", flashMode: "keep", flashFreq: "keep",
+      eraseAll: $("eraseAll").checked, compress: true,
+      reportProgress: (i, written) => {
+        done[i] = Math.min(written, fw.parts[i].size);
+        const pct = Math.round((done.reduce((a, b) => a + b, 0) / total) * 100);
+        $("prog").style.width = pct + "%";
+        status("flashStatus", `Writing firmware… ${pct}%`);
+      },
+    });
+    $("prog").style.width = "100%";
+    status("flashStatus", "Written. Restarting the board…");
+  } catch (e) {
+    console.error(e);
+    log("ERROR: " + (e && e.message ? e.message : e));
+    let msg = errText(e);
+    if (/Failed to connect|Timeout|sync|Invalid head/i.test(msg)) msg = "Couldn't get the chip into flash mode. Hold BOOT, tap RST, let go of BOOT, then click Flash again (or try 115200).";
+    status("flashStatus", msg, "err");
+    transport && (transport.failed = true);
+  }
+
+  // give the port back to the monitor whatever happened
+  try { if (transport) await transport.disconnect(); } catch (_) {}
+  await closePort(port);   // also stops our own reader if flashing never started
+  try {
+    await openPort(port);
+    conn.port = port;
+    conn.busy = false; setConnUI();
+    await hardReset();
+    if (transport && !transport.failed) {
+      status("flashStatus", "Done! Waiting for the board to start…", "ok");
+      await sleep(3500);
+      const dev = await identify(15000);
+      if (dev) {
+        status("flashStatus", `Done! ${dev.board} ${verText(dev.ver)} is running.` + (dev.ssid ? "" : " Now set Wi-Fi in step 3."), "ok");
+        if (!dev.ssid) { $("step3").scrollIntoView({ behavior: "smooth", block: "start" }); $("ssid").focus(); }
+      } else {
+        status("flashStatus", "Flashed. The board didn't answer yet — press RST on it, then Reload from board.", "warn");
+      }
+    }
+  } catch (e) {
+    conn.port = null; conn.busy = false; setConnUI();
+    $("connInfo").className = "warn";
+    $("connInfo").textContent = "Flash finished but the port couldn't be reopened. Click Connect again.";
+  }
+}
+
+// =======================================================================================
+// SETTINGS (over the open port)
+// =======================================================================================
+async function saveSettings() {
+  const ssid = $("ssid").value.trim();
+  const pass = $("pass").value;
+  const tz = currentTz();
+  const rot = $("orient").value;
+  const keep = !ssid;
+  if (keep && !(conn.device && conn.device.ssid)) {
+    status("setStatus", "Enter your Wi-Fi name (the board has none saved yet).", "warn"); $("ssid").focus(); return;
+  }
+  if (!keep && pass && pass.length < 8) { status("setStatus", "Wi-Fi passwords are at least 8 characters.", "warn"); return; }
+  if (!tz) { status("setStatus", "Enter a timezone.", "warn"); return; }
+
+  conn.busy = true; setConnUI();
+  try {
+    status("setStatus", "Saving to the board…");
+    const cmd = keep ? `IMON SET - - ${toHex(tz)} ${rot}` : `IMON SET ${toHex(ssid)} ${toHex(pass)} ${toHex(tz)} ${rot}`;
+    const r = await query(cmd, (l) => (l.startsWith("IMON OK") ? "ok" : l.startsWith("IMON ERR") ? l.slice(9) : null), { timeout: 12000 });
+    if (r === "ok") {
+      localStorage.setItem("imon-tz", tz);
+      $("pass").value = "";
+      status("setStatus", keep ? "Saved! The board is restarting with the new settings."
+                               : `Saved! The board is restarting and joining “${ssid}”.`, "ok");
+      conn.busy = false; setConnUI();
+      await sleep(3500);
+      if (conn.port) await identify(12000);
+    } else if (r) status("setStatus", "The board said: " + r, "err");
+    else status("setStatus", "No answer. Is the NetPulse firmware on the board? Flash it in step 2.", "err");
+  } catch (e) {
+    status("setStatus", errText(e), "err");
+  } finally { conn.busy = false; setConnUI(); }
+}
+
+async function reloadSettings() {
+  conn.busy = true; setConnUI();
+  try {
+    const dev = await identify(8000);
+    status("setStatus", dev ? `Loaded from ${dev.board}. Wi-Fi: ${dev.ssid || "not set"} (password isn't shown).`
+                            : "No answer from the board.", dev ? "ok" : "err");
+  } finally { conn.busy = false; setConnUI(); }
+}
+
+async function wipeSettings() {
+  if (!confirm("Forget the saved Wi-Fi on the board?")) return;
+  conn.busy = true; setConnUI();
+  try {
+    const r = await query("IMON WIPE", (l) => (l.startsWith("IMON OK") ? "ok" : null), { timeout: 10000 });
+    status("setStatus", r ? "Wi-Fi forgotten. The board restarts into setup mode." : "No answer from the board.", r ? "ok" : "err");
+    if (r) { conn.device && (conn.device.ssid = ""); $("ssid").placeholder = ""; }
+  } catch (e) {
+    status("setStatus", errText(e), "err");
+  } finally { conn.busy = false; setConnUI(); }
+}
+
+// =======================================================================================
+// INIT
+// =======================================================================================
+if (!("serial" in navigator)) { $("noSerial").style.display = "block"; $("connBtn").disabled = true; }
+if (FIRMWARE) {
+  $("fwVer").textContent = verText(FIRMWARE.version);
+  $("built").textContent = "built " + FIRMWARE.built;
+} else {
+  $("built").textContent = "no firmware embedded — run build_flasher";
+}
+const saved = localStorage.getItem("imon-board");
+if (saved && fwFor(saved)) selected = saved;
+else { const first = BOARDS.find((b) => fwFor(b.id)); if (first) selected = first.id; }
+renderBoards();
+initTz();
+setTz(localStorage.getItem("imon-tz") || "AEST-10");
+setConnUI();
+
+$("connBtn").onclick = () => (conn.port ? disconnect() : connect());
+$("flashBtn").onclick = flash;
+$("sendBtn").onclick = saveSettings;
+$("readBtn").onclick = reloadSettings;
+$("wipeBtn").onclick = wipeSettings;
+$("clearLogBtn").onclick = clearHistory;
+$("monClear").onclick = () => { $("mon").textContent = ""; };
+$("resetBtn").onclick = async () => { if (conn.port) { await hardReset(); } };
+$("showPw").onclick = () => {
+  const p = $("pass");
+  p.type = p.type === "password" ? "text" : "password";
+  $("showPw").textContent = p.type === "password" ? "Show" : "Hide";
+};
+window.addEventListener("beforeunload", () => { if (conn.port) closePort(conn.port); });
+</script>
+</body>
+</html>

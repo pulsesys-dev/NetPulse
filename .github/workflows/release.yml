@@ -1,0 +1,73 @@
+# Push a version tag and this builds every board, then publishes a GitHub release the boards
+# update themselves from (they check at start-up and once a day).
+#
+#   Official: git tag -a v2.2.0 -m "What changed (shown on the board)" && git push origin v2.2.0
+#   Beta:     git tag -a b2.2.0 -m "..." && git push origin b2.2.0     -> pre-release
+#
+# Official firmware only takes official releases; beta firmware (FW_VERSION "b...") takes betas too.
+# The tag must match FW_VERSION in NetPulse/NetPulse.ino exactly.
+# The tag message becomes the release notes the board shows in its update prompt.
+name: Release
+
+on:
+  push:
+    tags: ["v*", "b*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check the tag matches FW_VERSION
+        run: |
+          v=$(sed -n 's/^#define FW_VERSION *"\([^"]*\)".*/\1/p' NetPulse/NetPulse.ino)
+          if [ "$v" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} doesn't match FW_VERSION \"$v\" in NetPulse/NetPulse.ino"; exit 1
+          fi
+
+      - name: Release notes from the tag message
+        run: |
+          git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+          # annotated tag -> its message; plain tag -> the commit message
+          git tag -l --format='%(contents)' "${GITHUB_REF_NAME}" | sed '/^-----BEGIN PGP/,$d' > notes.md
+          [ -s notes.md ] || echo "NetPulse ${GITHUB_REF_NAME}" > notes.md
+          cat notes.md
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+
+      - run: pip install platformio
+
+      - name: Build all boards and the web flasher
+        run: python3 build_flasher.py
+
+      - name: Collect the release files
+        run: |
+          mkdir -p release
+          for e in cyd guition_c guition_r; do
+            cp ".pio/build/$e/firmware.bin" "release/NetPulse-$e-ota.bin"   # updates over Wi-Fi
+          done
+          cp NetPulse-Flasher.html release/                                  # first install over USB
+          (cd .. && zip -qr "$GITHUB_WORKSPACE/release/NetPulse-${GITHUB_REF_NAME}.zip" "$(basename "$GITHUB_WORKSPACE")" \
+              -x "*/.pio/*" "*/.git/*" "*/release/*" "*/notes.md")
+          ls -l release
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          body_path: notes.md
+          prerelease: ${{ startsWith(github.ref_name, 'b') }}
+          name: ${{ startsWith(github.ref_name, 'b') && format('NetPulse {0} (beta)', github.ref_name) || format('NetPulse {0}', github.ref_name) }}

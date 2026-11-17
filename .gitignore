@@ -1,0 +1,6 @@
+.pio/
+release/
+notes.md
+NetPulse-Flasher.html
+__pycache__/
+.DS_Store
