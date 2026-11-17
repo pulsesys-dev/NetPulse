@@ -1631,7 +1631,6 @@ int wrapText(const String &t, const AAFont *f, int w, String *lines, int maxLine
 }
 
 // modal geometry (shared by the drawing helpers)
-struct ModalGeo { Box box, b0, b1, bar; };
 ModalGeo modalGeo() {
   ModalGeo g;
   int w = min((int)L.W - 2 * L.m, L.big ? 400 : 300);

@@ -58,6 +58,7 @@ struct Event {
 enum Align : uint8_t { AL_LEFT, AL_CENTER, AL_RIGHT };
 
 struct Box { int16_t x, y, w, h; int16_t r() const { return x + w; } int16_t b() const { return y + h; } };
+struct ModalGeo { Box box, b0, b1, bar; };        // update prompt layout
 
 struct Layout {
   int16_t W, H;
